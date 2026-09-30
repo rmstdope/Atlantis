@@ -1383,15 +1383,19 @@ int Game::GenRules(const AString &rules, const AString &css,
 		}
 		f.Paragraph(temp);
 		if (!Globals->START_CITIES_EXIST) {
-			temp = "The Nexus contains portals that provide one-way "
+			// These are O_GATEWAY objects ("Gateway to <terrain> [n]" in the report), created
+			// in ARegionList::MakeNexus-style setup in each ruleset's map.cpp and resolved in
+			// Game::DoAMoveOrder (MOVE IN from an O_GATEWAY picks a region of that terrain).
+			// Call them Gateways, as the report does -- "portal" is also a magic item.
+			temp = "The Nexus contains Gateways that provide one-way "
 				"transportation to various terrain types.  "
-				"A unit that enters one of these portals (by "
-				"entering the portal and moving IN) will "
+				"A unit that enters one of these Gateways (by "
+				"entering the Gateway and moving IN) will "
 				"be transported to a region of the matching "
 				"terrain type.  The region chosen is somewhat "
 				"random, but will prefer to place players in "
 				"towns where no other players are present.  "
-				"Once a unit has passed through a portal, there "
+				"Once a unit has passed through a Gateway, there "
 				"is no way to return to the Nexus.";
 		} else if (Globals->MULTI_HEX_NEXUS) {
 			temp = "From the Nexus hexes, there are exits either to other "
@@ -1412,6 +1416,8 @@ int Game::GenRules(const AString &rules, const AString &css,
 				temp += " (but not to return)";
 			temp += ".";
 		}
+		int nexus_gate_lore = Globals->GATES_EXIST &&
+			(Globals->NEXUS_GATE_OUT || Globals->NEXUS_IS_CITY);
 		if (Globals->START_CITIES_EXIST) {
 			temp += " The ";
 			if (!Globals->MULTI_HEX_NEXUS)
@@ -1486,6 +1492,32 @@ int Game::GenRules(const AString &rules, const AString &css,
 			}
 		}
 		f.Paragraph(temp);
+		if (!Globals->START_CITIES_EXIST || nexus_gate_lore) {
+			f.Paragraph("Examples:");
+		}
+		if (!Globals->START_CITIES_EXIST) {
+			// ParseDir turns a number into MOVE_ENTER + n, so "MOVE 2 IN" enters object 2 and
+			// then moves IN during movement; ENTER runs in the instant ENTER/LEAVE phase, before
+			// movement, so "ENTER 2" followed by "MOVE IN" does the same in two orders.
+			temp = "Your report of the Nexus lists its Gateways, for example "
+				"\"+ Gateway to forest [2] : Gateway, contains an inner "
+				"location.\" To leave the Nexus through Gateway 2 with a "
+				"single order:";
+			temp2 = "MOVE 2 IN";
+			f.CommandExample(temp, temp2);
+			temp = "Or enter Gateway 2 first, and then move in:";
+			temp2 = "ENTER 2\nMOVE IN";
+			f.CommandExample(temp, temp2);
+		}
+		if (nexus_gate_lore) {
+			// Game::ProcessCastGateLore: "RANDOM" is a random jump. From the Nexus,
+			// RunGateJump accepts any open surface gate (nexgate), and the Nexus gate is always
+			// open (ARegion::SetGateStatus). Without UNITS only the mage jumps.
+			temp = "A mage who knows Gate Lore can leave the Nexus with a "
+				"random gate jump:";
+			temp2 = "CAST GATE RANDOM";
+			f.CommandExample(temp, temp2);
+		}
 	}
 
 	f.LinkRef("movement");
