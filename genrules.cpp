@@ -230,6 +230,18 @@ void Game::WriteFactionTypeDescription(std::ostringstream& buffer, Faction &fac)
 	}
 }
 
+// True if some enabled item is refused by TRANSPORT/DISTRIBUTE -- the same test as
+// ParseTransportableItem in items.cpp. Used to point the order entries at the list of such
+// items in the "Transportation of goods" section.
+static int SomeItemsNotTransportable()
+{
+	for (int i = 0; i < NITEMS; i++) {
+		if (ItemDefs[i].flags & ItemType::DISABLED) continue;
+		if (ItemDefs[i].flags & (ItemType::NOTRANSPORT | ItemType::CANTGIVE)) return 1;
+	}
+	return 0;
+}
+
 // LLS - converted HTML tags to lowercase
 int Game::GenRules(const AString &rules, const AString &css,
 		const AString &intro)
@@ -3727,16 +3739,82 @@ int Game::GenRules(const AString &rules, const AString &css,
 
 		f.Paragraph(temp);
 
-		temp = "Not all type of items can be ";
-		temp += f.Link("#transport", "TRANSPORT") + "ed to or ";
-		temp += f.Link("#distribute", "DISTRIBUTE") + "d by ";
-		temp += "a quartermaster. ";
-		temp += "Men (including Leaders), summoned creatures (including ";
-		temp += "illusionary ones), ships, mounts, war machines, and ";
-		temp += "items created using artifact lore need to be ";
-		temp += "carried/sailed from one location to another by a unit.";
+		// Built from the item tables rather than hard-coded: ParseTransportableItem (items.cpp)
+		// rejects every enabled item flagged NOTRANSPORT or CANTGIVE, and nothing else in
+		// Check/RunTransportOrders restricts items. The old fixed list omitted livestock and
+		// described NewOrigins' magic items as "created using artifact lore". Each item is put
+		// in the first category it matches; a category is named only if something in it is
+		// blocked, with any transportable members listed as exceptions, and blocked items that
+		// fit no category (e.g. livestock) are named individually.
+		{
+			struct Category {
+				const char *label;
+				std::vector<std::string> blocked, allowed;
+			};
+			Category cats[] = {
+				{ Globals->LEADERS_EXIST ? "men (including leaders)" : "men", {}, {} },
+				{ "ships", {}, {} },
+				{ "mounts", {}, {} },
+				{ "war machines", {}, {} },
+				{ "creatures (including summoned and illusionary ones)", {}, {} },
+				{ "magic items", {}, {} },
+			};
+			std::vector<std::string> other;
+			for (i = 0; i < NITEMS; i++) {
+				if (ItemDefs[i].flags & ItemType::DISABLED) continue;
+				int t = ItemDefs[i].type;
+				int c = -1;
+				if (t & IT_MAN) c = 0;
+				else if (t & IT_SHIP) c = 1;
+				else if (t & IT_MOUNT) c = 2;
+				// Built monsters (catapult, steel defender) are war machines; others are creatures.
+				else if ((t & IT_MONSTER) && ItemDefs[i].pSkill) c = 3;
+				else if (t & IT_MONSTER) c = 4;
+				else if (t & IT_MAGIC) c = 5;
+				int blocked = (ItemDefs[i].flags &
+					(ItemType::NOTRANSPORT | ItemType::CANTGIVE)) != 0;
+				if (c < 0) {
+					if (blocked) other.push_back(ItemDefs[i].names);
+					continue;
+				}
+				(blocked ? cats[c].blocked : cats[c].allowed).push_back(
+					ItemDefs[i].names);
+			}
+			std::vector<std::string> parts;
+			for (auto &cat : cats) {
+				if (cat.blocked.empty()) continue;
+				std::string part = cat.label;
+				if (!cat.allowed.empty()) {
+					part += " (except ";
+					for (size_t n = 0; n < cat.allowed.size(); n++) {
+						if (n > 0) part += (n == cat.allowed.size() - 1) ? " and " : ", ";
+						part += cat.allowed[n];
+					}
+					part += ")";
+				}
+				parts.push_back(part);
+			}
+			for (auto &name : other) parts.push_back(name);
 
-		f.Paragraph(temp);
+			if (!parts.empty()) {
+				f.LinkRef("transport_items");
+				temp = "Not all items can be ";
+				temp += f.Link("#transport", "TRANSPORT") + "ed or ";
+				temp += f.Link("#distribute", "DISTRIBUTE") + "d. ";
+				std::string list;
+				for (size_t n = 0; n < parts.size(); n++) {
+					if (n > 0) list += (n == parts.size() - 1) ? ", and " : ", ";
+					list += parts[n];
+				}
+				list[0] = toupper(list[0]);
+				temp += list.c_str();
+				temp += " cannot be sent this way; they have to be carried or "
+					"sailed from one place to another by a unit. An order to "
+					"transport or distribute one of them is rejected as an "
+					"invalid item.";
+				f.Paragraph(temp);
+			}
+		}
 	}
 
 	f.LinkRef("com");
@@ -5281,6 +5359,10 @@ int Game::GenRules(const AString &rules, const AString &css,
 					"silver.";
 			}
 		}
+		if (SomeItemsNotTransportable()) {
+			temp += " Some items cannot be distributed; see the ";
+			temp += f.Link("#transport_items", "list of such items") + ".";
+		}
 		if (!Globals->TRANSPORT_NO_TRADE) {
 			temp += " Use of this order counts as trade activity in "
 				"the hex.";
@@ -6407,6 +6489,10 @@ int Game::GenRules(const AString &rules, const AString &css,
 			"a transport structure.";
 		// Gated like the BUILD text on BUILD_NO_TRADE: CheckTransportOrders skips the TRADE
 		// ActivityCheck entirely when TRANSPORT_NO_TRADE is set (it is in NewOrigins).
+		if (SomeItemsNotTransportable()) {
+			temp += "  Some items cannot be transported; see the ";
+			temp += f.Link("#transport_items", "list of such items") + ".";
+		}
 		if (!Globals->TRANSPORT_NO_TRADE) {
 			temp += "  Use of this order counts as trade activity in the "
 				"hex.";
