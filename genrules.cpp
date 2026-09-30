@@ -4851,13 +4851,82 @@ int Game::GenRules(const AString &rules, const AString &css,
 			"activity because it is fun, and you can get a great reward like silver, magical items, weapons, etc.";
 		f.Paragraph(temp);
 
+		// Monster combat participation, derived from the ordinary muster rules (Game::GetSides /
+		// GetAFacs in battle.cpp) plus two facts about monsters: every wandering and lair
+		// monster belongs to the one monster faction (Game::MakeWMon uses monfaction), and
+		// Unit::SetMonFlags gives every monster unit guard = GUARD_AVOID and FLAG_HOLDING.
+		// - Attacking: GetAFacs/GetSides only add an avoiding unit if it is the attacker itself,
+		//   so other monsters in the region stay out. Each monster rolls its own attack
+		//   (Game::CheckWMonAttack), so two attacks are two separate battles.
+		// - Attacked: an avoiding unit of the target's faction joins the defence only if the
+		//   attackers can identify it (Faction::CanSee == 2, i.e. observation > stealth) and
+		//   catch it (Faction::CanCatch) -- Game::CanAttack.
+		// - Adjacent regions: units outside the battle region only join if FLAG_HOLDING is off,
+		//   which it never is for monsters.
+		temp = "All wandering monsters, including those living in lairs, belong "
+			"to a single monster faction, and every monster unit has Avoid "
+			"Combat and Hold set. Under the normal rules for ";
+		temp += f.Link("#com_muster", "who joins a battle") + ", this means:";
+		f.Paragraph(temp);
+		f.Enclose(1, "ul");
+		f.TagText("li", "When a monster attacks, it fights alone. Other monster "
+			"units in the same region do not join in. Each monster decides "
+			"separately whether to attack, so if several monsters in a region "
+			"attack in the same month, each attack is a separate battle.");
+		temp = "When you attack a monster, other monster units in the same "
+			"region join its defense only if you could have attacked them "
+			"directly as well: your faction must be able to ";
+		if (has_obse) {
+			temp += "identify them (having a unit whose Observation is higher "
+				"than their Stealth)";
+		} else {
+			temp += "identify them";
+		}
+		temp += " and to catch them (see ";
+		temp += f.Link("#com_attacking", "attacking") + "). Monsters in a lair "
+			"can always be caught, but still have to be identified.";
+		f.TagText("li", temp);
+		f.TagText("li", "Monsters never join a battle in a neighboring region, "
+			"whether another monster is attacking there or being attacked.");
+		f.Enclose(0, "ul");
+
 		f.TagText("h4", "Monster movement probability table");
+		// Mirrors the wandering-monster branch of Unit::DefaultOrders (unit.cpp): the move is
+		// drawn uniformly from a list with 4 "stay" entries, 2 entries per enterable neighbor of
+		// preferred terrain (every enterable terrain counts as preferred if the monster has no
+		// preferences), and 1 per neighbor of neutral terrain that itself borders preferred
+		// terrain. Disliked (forbidden) terrain and terrain the monster cannot cross get none.
+		temp = "Each month, a wandering monster that is not in a lair either "
+			"stays where it is or moves to one neighboring region. Only "
+			"neighboring regions the monster is able to enter count: it never "
+			"enters terrain it dislikes or terrain it cannot cross (such as "
+			"water, for a monster that cannot swim), and it only enters a "
+			"region of neutral terrain if that region borders terrain the "
+			"monster prefers. A monster without terrain preferences treats "
+			"every region it can enter as preferred. A particular preferred "
+			"region is twice as likely to be chosen as a particular neutral "
+			"one, and staying where it is counts as much as two preferred "
+			"regions. A monster's description shows the terrains it prefers "
+			"and dislikes.";
+		f.Paragraph(temp);
+		temp = "The table shows the resulting chances. Directions is the number "
+			"of neighboring regions the monster can move into; Preferred and "
+			"Neutral are how many of those are of preferred and of neutral "
+			"terrain. Move Preferred and Move Neutral are the chances that the "
+			"monster moves into one of the preferred or one of the neutral "
+			"regions, shared equally between them; Stay is the chance that it "
+			"stays where it is. For example, a monster with 3 possible "
+			"directions, 2 of them preferred and 1 neutral, moves into one of "
+			"the preferred regions 44% of the time (22% each), into the neutral "
+			"region 11% of the time, and stays 44% of the time. Percentages are "
+			"rounded down, so a row may not add up to exactly 100%.";
+		f.Paragraph(temp);
 		f.Enclose(1, "table border=\"1\"");
 
 		f.Enclose(1, "thead");
 			f.Enclose(1, "tr");
 				f.TagText("th", "Directions");
-				f.TagText("th", "Prefered");
+				f.TagText("th", "Preferred");
 				f.TagText("th", "Neutral");
 				f.TagText("th", "Move Preferred");
 				f.TagText("th", "Move Neutral");
