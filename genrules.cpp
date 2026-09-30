@@ -2604,6 +2604,20 @@ int Game::GenRules(const AString &rules, const AString &css,
 			"in the region, as shown in your turn report, and each unit takes "
 			"everything it needs before the next unit gets anything.";
 		f.Paragraph(temp);
+		// The order is the region's object list (the dummy "open" object is created first in
+		// ARegion::Setup, then buildings/fleets in list order) and each object's unit list --
+		// the same lists ARegion::WriteReport prints, unsorted. They survive save/load in order.
+		// Unit::MoveUnit (move, ENTER, LEAVE, sail) removes and APPENDS, and FORM places the new
+		// unit with MoveUnit too, so those units go to the back of their new group.
+		temp = "That order is: first the units in the open, then the units in "
+			"each building and ship, in the order the buildings and ships are "
+			"listed. It stays the same from turn to turn, except that a unit "
+			"which moves into the region, enters or leaves a building or ship, "
+			"or is newly formed is placed at the end of its new group. Your "
+			"turn report therefore shows the order that was used that turn, "
+			"and the order next turn will be the same for all units that stay "
+			"where they are.";
+		f.Paragraph(temp);
 		f.Enclose(1, "ol");
 		if (Globals->FOOD_ITEMS_EXIST) {
 			f.TagText("li", AString("Units that have issued ") +
@@ -6170,6 +6184,11 @@ int Game::GenRules(const AString &rules, const AString &css,
 	temp += " or ";
 	temp +=	f.Link("#produce", "producing");
 	temp += ".  SHARE 0 returns a unit to its default selfish state.";
+	// Unit::ConsumeShared: own items first, then sharing units of the same faction in
+	// region/object/unit list order (the report order).
+	temp += " A unit always uses its own possessions first; if it needs "
+		"more, it takes them from your sharing units in the same region, in "
+		"the order they appear in your turn report.";
 	f.Paragraph(temp);
 	temp = "This sharing does not extend to the heat of battle, "
 		"only to economic actions.  So a unit that is sharing will provide "
