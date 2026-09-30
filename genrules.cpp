@@ -2162,12 +2162,51 @@ int Game::GenRules(const AString &rules, const AString &css,
 		f.Enclose(0, "table");
 		f.Enclose(0, "center");
 	}
+	// Skill days are stored per UNIT (total over all men); the level comes from days per man
+	// (Unit::GetRealSkill -> GetLevelByDays: 1, 3, 6, 10, 15 months for levels 1-5). BUY adds
+	// men without adding days, so the average drops; GIVE moves the giving men's share of the
+	// days (SkillList::Split, rounded down, remainder stays) and adds it to the receiver
+	// (SkillList::Combine). Unit::AdjustSkills then caps each skill at the lowest maximum of the
+	// unit's races and DISCARDS the excess -- the one case where months are lost. It runs right
+	// after a GIVE of men, but for BUY it runs before the men are added, so bought men only
+	// trigger the cap the next time the unit studies (or receives men).
 	temp = "If units are merged together, their skills are averaged out. "
 		"No rounding off is done; rather, the computer keeps track for each "
 		"unit of how many total months of training that unit has in each "
-		"skill. When units are split up, these months are divided as evenly "
-		"as possible among the people in the unit; but no months are ever "
-		"lost.";
+		"skill, and the unit's skill level is based on the average number of "
+		"months per man. When units are split up, these months are divided "
+		"as evenly as possible among the people in the unit, and no months "
+		"are lost in the split.";
+	if (Globals->RACES_EXIST) {
+		temp += " However, a unit's skill can never be higher than the "
+			"maximum level of the least capable race in it: if men who can "
+			"only reach a lower level join the unit, the skill is reduced to "
+			"that level and any training above it is lost. For men given to "
+			"the unit this happens at once; for men bought by the unit, the "
+			"next time it studies.";
+	}
+	f.Paragraph(temp);
+	temp = AString("Remember that level 1 needs ") + GetDaysByLevel(1) / 30 +
+		" month of training per man, level 2 needs " + GetDaysByLevel(2) / 30 +
+		" months, and level 3 needs " + GetDaysByLevel(3) / 30 + " months.";
+	f.Paragraph(temp);
+	f.Paragraph("Example of buying men:");
+	temp = "A unit of 10 men has 3 months of Mining training per man, 30 "
+		"months in total, which is level 2. It buys 5 more men. The unit "
+		"now has 15 men sharing the same 30 months, which is 2 months per "
+		"man, so its Mining drops to level 1. One more month of study brings "
+		"every man to 3 months, and the unit back to level 2.";
+	f.Paragraph(temp);
+	f.Paragraph("Example of giving men:");
+	temp = "Unit A has 10 men with 6 months of Mining each, 60 months in "
+		"total, which is level 3. Unit B has 10 men with 1 month each, 10 "
+		"months in total, which is level 1. A gives 5 men to B. The 5 men "
+		"take their share of A's training with them, 30 months. A keeps 5 "
+		"men and 30 months, which is still 6 months per man, so A stays at "
+		"level 3. B now has 15 men and 10 + 30 = 40 months, about 2.7 months "
+		"per man, so B is still level 1 (level 2 needs 3 months per man). "
+		"Skills that only one of the units knows are averaged over the new "
+		"number of men in the same way.";
 	f.Paragraph(temp);
 	f.LinkRef("skills_studying");
 	f.TagText("h3", "Studying:");
@@ -2971,6 +3010,145 @@ int Game::GenRules(const AString &rules, const AString &css,
 			"markets for common items, and will also have markets for "
 			"less common, more expensive trade items.";
 		f.Paragraph(temp);
+		// Population growth runs in Game::ProcessEconomics -> ARegion::Grow, only when
+		// DYNAMIC_POPULATION or REGIONS_ECONOMY is set, and only for regions a player unit has
+		// visited (ARegion::visited, set during maintenance). Rural growth: Grow() moves the
+		// population toward a target that player PRODUCE activity (not silver) raises.
+		// Settlement growth: TownGrowth() sets the target from market activity -- "Wanted"
+		// (M_SELL) markets the players sell into, food counting double and food other than fish
+		// forming the quota, and "For Sale" (M_BUY) trade items the players buy, which also
+		// feeds the region's improvement/development in PostTurn. The size class is recomputed
+		// from population and development each turn (TownInfo::TownType), so it can go down too.
+		// town->hab (the growth limit that damps ARegion::Grow) is computed by
+		// ARegion::TownHabitat only once, in SetTownType when the settlement is founded;
+		// nothing recomputes it, so buildings and development added during play do not change
+		// it (see Atlantis-TODO.md item 3.4 -- TownHabitat also has flag/type and ItemDefs[-1]
+		// bugs). Hence the text says the limit is fixed at founding and names no buildings.
+		// Development still matters: it feeds TownType (size class) and wages. Earth Lore and
+		// Clear Skies only help indirectly: while active they add to wages (Wages) and production
+		// (UpdateProducts) and give extra rounds of development recovery toward
+		// maxdevelopment (PostTurn).
+		if (Globals->DYNAMIC_POPULATION || Globals->REGIONS_ECONOMY) {
+			// Two separate quantities, kept apart here because they are easy to confuse:
+			// - Population (ARegion::Grow / TownGrowth): rural peasants move toward a target
+			//   raised by PRODUCE of the region's own resources (Production activity); a
+			//   settlement's target comes from market activity. In TownGrowth every sale into a
+			//   "Wanted" market counts (food, fish included, x2), but the denominator ("tot") is
+			//   only the non-fish food wanted plus the trade items a city sells -- so fish and
+			//   other wanted goods help but are never *required*.
+			// - Development (PostTurn): rises when this turn's "improvement" exceeds it.
+			//   Improvement comes from PRODUCE of goods made from materials (RunUnitProduce),
+			//   BUILD of buildings and ships (Run1BuildOrder, ShipConstruction) and buying a
+			//   city's trade items (TownGrowth). Roads raise the odds (RoadDevelopment lowers
+			//   "progress"). Pillage lowers it; recovery toward maxdevelopment gets one extra
+			//   round per level of Earth Lore / Clear Skies. It is not saved between turns.
+			// Development does not add people; it feeds Wages() and TownType().
+			temp = "Two things about a region change over time: its "
+				"population and its development. Population is the number of "
+				"people living in the region, both in the countryside and in "
+				"its settlement. Development measures how economically "
+				"advanced the region is. Development does not add people by "
+				"itself, but it raises the wages in the region and helps "
+				"decide whether its settlement is a village, a town or a "
+				"city.";
+			f.Paragraph(temp);
+			temp = "<b>Population.</b> The population of a region only "
+				"changes once players have visited it. The number of peasants "
+				"in the countryside slowly moves toward a level set by the "
+				"terrain. A settlement grows when players trade at its "
+				"markets: the more you trade with it, the faster it grows, up "
+				"to a limit that is set when the settlement is founded. "
+				"Buildings do not change this limit.";
+			f.Paragraph(temp);
+			temp = "<b>Development.</b> A region's development rises with "
+				"economic activity there, and roads leading out of the region "
+				"make it rise faster. Pillaging lowers development, and it then "
+				"slowly comes back.";
+			f.Paragraph(temp);
+			temp = "This table shows which activities help a region's "
+				"population and its development:";
+			f.Paragraph(temp);
+			{
+				// Rows mirror the code paths described in the comment above: Grow() (countryside,
+				// region resources), TownGrowth() (settlement markets: non-trade "Wanted" goods,
+				// food x2, and trade items bought from a city -- trade items sold TO a city are
+				// not counted), and the improvement sources (RunUnitProduce, BUILD, city trade
+				// items bought). Silver produced by WORK/ENTERTAIN counts toward neither.
+				struct Row { AString what; const char *pop; const char *dev; };
+				std::vector<Row> rows;
+				rows.push_back({ AString("Producing the region's resources (") +
+					f.Link("#produce", "PRODUCE") + ")", "Yes (countryside)", "No" });
+				rows.push_back({ AString("Making goods from materials (") +
+					f.Link("#produce", "PRODUCE") + ")", "No", "Yes" });
+				rows.push_back({ AString("Constructing buildings and ships (") +
+					f.Link("#build", "BUILD") + ")", "No", "Yes" });
+				rows.push_back({ AString("Working or entertaining"), "No", "No" });
+				if (Globals->FOOD_ITEMS_EXIST) {
+					rows.push_back({ AString("Selling a settlement the food it wants (") +
+						f.Link("#sell", "SELL") + ")", "Yes (counts double)", "No" });
+				}
+				rows.push_back({ AString("Selling a settlement other goods it wants, "
+					"except trade items (") + f.Link("#sell", "SELL") + ")", "Yes", "No" });
+				rows.push_back({ AString("Buying trade items that a city sells (") +
+					f.Link("#buy", "BUY") + ")", "Yes", "Yes" });
+				rows.push_back({ AString("Selling trade items to a city (") +
+					f.Link("#sell", "SELL") + ")", "No", "No" });
+				f.Enclose(1, "center");
+				f.Enclose(1, "table border=\"1\"");
+				f.Enclose(1, "tr");
+				f.TagText("th", "Activity");
+				f.TagText("th", "Population");
+				f.TagText("th", "Development");
+				f.Enclose(0, "tr");
+				for (auto &row : rows) {
+					f.Enclose(1, "tr");
+					f.TagText("td", row.what);
+					f.Enclose(1, "td align=\"center\"");
+					f.PutStr(row.pop);
+					f.Enclose(0, "td");
+					f.Enclose(1, "td align=\"center\"");
+					f.PutStr(row.dev);
+					f.Enclose(0, "td");
+					f.Enclose(0, "tr");
+				}
+				f.Enclose(0, "table");
+				f.Enclose(0, "center");
+			}
+			temp = "The wages in a region depend on its development, on the "
+				"roads leading out of it, and on the size of its settlement.";
+			if (!(SkillDefs[S_EARTH_LORE].flags & SkillType::DISABLED) ||
+					!(SkillDefs[S_CLEAR_SKIES].flags & SkillType::DISABLED)) {
+				// PostTurn of the casting month: SetIncome/UpdateProducts see the spell level
+				// (Wages() +12 per level; grain and livestock amounts only), and those stored
+				// values are what players use the NEXT month; the flags are then cleared. The
+				// extra recovery rounds only move development back toward maxdevelopment, and
+				// pillaging (ARegion::Pillage) is the only thing that lowers development in play.
+				temp += " Earth Lore and Clear Skies improve a region's economy "
+					"for one month: during the month after the spell is cast, the "
+					"region's wages and the amount of grain and livestock that can "
+					"be produced are higher. They also help a region that has been "
+					"pillaged win back its lost development faster. Development won "
+					"back this way stays, but the spells never raise development "
+					"above what the region had before it was pillaged.";
+			}
+			f.Paragraph(temp);
+			// town->hab is never recomputed after founding (Atlantis-TODO.md 3.4 (c)), and
+			// AdjustPop gives the settlement a share of growth proportional to its remaining
+			// room (hab - pop), so hab is a hard ceiling. In the recorded NewOrigins game some
+			// settlements can therefore never reach the next class and no village can become a
+			// city -- hence "not every", rather than promising promotion.
+			temp = "<b>Villages, towns and cities.</b> Whether a settlement is "
+				"a village, a town or a city depends on its population and on "
+				"the region's development, and is checked every turn. A "
+				"settlement that grows enough, or whose region becomes more "
+				"developed, can move up to a larger type and gains the markets "
+				"described above. But because each settlement's size limit is "
+				"fixed when it is founded, not every village can become a town, "
+				"and not every town can become a city. A settlement whose "
+				"population or development falls, for example because the "
+				"region is pillaged, can also drop back to a smaller type.";
+			f.Paragraph(temp);
+		}
 		temp = "Trade items are bought and sold only by cities, and have "
 			"no other practical uses.  However, the profit margins on "
 			"these items are usually quite high. ";
