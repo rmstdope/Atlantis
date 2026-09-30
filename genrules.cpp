@@ -680,10 +680,10 @@ int Game::GenRules(const AString &rules, const AString &css,
 		if (!Globals->BUILD_NO_TRADE) {
 			temp += ", building ships and buildings";
 		}
-		temp += ".";
+		temp += ". ";
 		if (qm_exist) {
 			temp += "Faction points spent on Trade also determine the "
-				"of quartermaster units a trade faction can have. ";
+				"number of quartermaster units a trade faction can have. ";
 		}
 		temp += "Faction Points spent on Magic determine the number of mages ";
 		if (app_exist) {
@@ -1703,6 +1703,19 @@ int Game::GenRules(const AString &rules, const AString &css,
 			}
 			temp += ".";
 		}
+		// Flying fleets are exempt from every terrain rule of SAIL: both "Can't sail inland"
+		// gates in Do1SailOrder test fleet->flying < 1, and Object::SailThroughCheck returns 1
+		// for a flying fleet before looking at terrain. BUILD's coastal check
+		// (ProcessBuildOrder) likewise skips ships with fly > 0, but the "Can't build in an
+		// ocean" check before it applies to every ship. A fleet counts as flying only if every
+		// ship in it flies (Object::FleetCapacity). Only mention any of this when the ruleset
+		// actually has an enabled flying ship.
+		int flying_ships = 0;
+		for (i = 0; i < NITEMS; i++) {
+			if (ItemDefs[i].flags & ItemType::DISABLED) continue;
+			if (!(ItemDefs[i].type & IT_SHIP)) continue;
+			if (ItemDefs[i].fly > 0) flying_ships = 1;
+		}
 		temp += " A fleet can move from an ocean region to another "
 			"ocean region, or from a coastal region to an ocean "
 			"region, or from an ocean region to a coastal region.";
@@ -1715,7 +1728,20 @@ int Game::GenRules(const AString &rules, const AString &css,
 					"sail out along any side connecting to water.";
 			}
 		}
-		temp += " Ships can only be constructed in coastal regions. For a "
+		if (flying_ships) {
+			temp += " Fleets made up entirely of flying ships are the "
+				"exception to all of the above: they may sail into any adjacent region, over "
+				"land or water. A fleet with even one "
+				"ship that cannot fly follows the normal rules. Apart from "
+				"the terrain, flying fleets obey all the other rules for "
+				"fleets, including capacity, sailors and movement costs.";
+		}
+		temp += " Ships can only be constructed in coastal regions";
+		if (flying_ships) {
+			temp += ", except for flying ships, which can be constructed "
+				"in any land region";
+		}
+		temp += ". For a "
 			"fleet to enter any region only costs one movement point; the "
 			"cost of two movement points for entering, say, a forest "
 			"coastal region, does not apply.";
@@ -3523,10 +3549,15 @@ int Game::GenRules(const AString &rules, const AString &css,
 			temp += ", and a faction is limited in the number of "
 				"quartermasters it may have at any one time";
 		}
-		temp += ". Both the ";
-		temp += f.Link("#transport", "TRANSPORT") + " and " +
-			f.Link("#distribute", "DISTRIBUTE") + " orders count as "
-			"trade activity in the hex of the unit issuing the order. ";
+		temp += ". ";
+		// Same gate as the TRANSPORT/DISTRIBUTE order entries: CheckTransportOrders skips the
+		// TRADE ActivityCheck when TRANSPORT_NO_TRADE is set.
+		if (!Globals->TRANSPORT_NO_TRADE) {
+			temp += "Both the ";
+			temp += f.Link("#transport", "TRANSPORT") + " and " +
+				f.Link("#distribute", "DISTRIBUTE") + " orders count as "
+				"trade activity in the hex of the unit issuing the order. ";
+		}
 		temp += "The target unit must be at least FRIENDLY to the unit "
 			"which issues the order.";
 
@@ -3963,9 +3994,23 @@ int Game::GenRules(const AString &rules, const AString &css,
 	temp += f.Link("#give", "GIVE") + " 0 order) or to prevent yourself "
 		"picking up certain types of spoils (with the ";
 	temp += f.Link("#spoils", "SPOILS") + " order) in case you win the "
-		"battle! Also, note that if the winning side took any losses in "
-		"the battle, any units on this side will not be allowed to move, "
-		"or attack again for the rest of the turn.";
+		"battle!";
+	f.Paragraph(temp);
+	// Mirrors Army::Win / Army::Tie / Soldier::Alive in army.cpp. The 5% is a literal in
+	// Army::Win (not a GameDefs field), so it is stated literally here; if it ever becomes
+	// configurable, interpolate it instead. loses_percent = 100 - floor(survivors * 100 / count)
+	// is the loss percentage rounded UP, which is why "any loss above 4%" is the exact rule
+	// (21 men losing 1 = 4.76% -> stopped; 25 men losing 1 = exactly 4% -> not stopped).
+	temp = "If the winning side lost 5% or more of its soldiers in a "
+		"battle, every unit on that side will not be allowed to move, or "
+		"attack again, for the rest of the turn. The losses are counted "
+		"across the whole side, not unit by unit, after any healing, and "
+		"the percentage is rounded up, so in practice any loss above 4% "
+		"counts. Each battle is judged on its own: losses from separate "
+		"battles are not added together. If a battle ends indecisively, "
+		"every surviving unit on both sides is stopped in the same way, "
+		"regardless of losses. Surviving units on the losing side cannot "
+		"attack again that turn, but they may still move.";
 	f.Paragraph(temp);
 	if (has_stea || has_obse) {
 		f.LinkRef("stealthobs");
@@ -5002,8 +5047,36 @@ int Game::GenRules(const AString &rules, const AString &css,
 			"are distributed.";
 		temp += " The unit issuing the distribute order must have the "
 			"quartermaster skill, and be the owner of a transport "
-			"structure. Use of this order counts as trade activity in "
-			"the hex.";
+			"structure.";
+		// Range and cost mirror Game::CheckTransportOrders / RunTransportOrders: the long-range
+		// branch (NONLOCAL_TRANSPORT + quartermaster bonus) requires o->type == O_TRANSPORT, so
+		// DISTRIBUTE always gets LOCAL_TRANSPORT. Shipping is charged only when
+		// dist > LOCAL_TRANSPORT, which a validated DISTRIBUTE can never be -- hence "always free".
+		// A range of 0 means unlimited in that code, and then distributing CAN cost silver, so
+		// both sentences are only printed for a positive LOCAL_TRANSPORT.
+		if (Globals->LOCAL_TRANSPORT > 0) {
+			temp += AString(" The recipient must be within ") +
+				Globals->LOCAL_TRANSPORT +
+				(Globals->LOCAL_TRANSPORT == 1 ? " hex" : " hexes") +
+				" of the distributing unit";
+			if (Globals->NONLOCAL_TRANSPORT > Globals->LOCAL_TRANSPORT ||
+					Globals->NONLOCAL_TRANSPORT == 0) {
+				temp += "; unlike ";
+				temp += f.Link("#transport", "TRANSPORT");
+				temp += ", distribute never gets the longer range available "
+					"to quartermasters";
+			}
+			temp += ".";
+			if (Globals->SHIPPING_COST > 0) {
+				temp += " Since shipping costs only apply to goods sent "
+					"further than this, distributing never costs any "
+					"silver.";
+			}
+		}
+		if (!Globals->TRANSPORT_NO_TRADE) {
+			temp += " Use of this order counts as trade activity in "
+				"the hex.";
+		}
 		f.Paragraph(temp);
 		f.Paragraph("Examples:");
 		temp = "Distribute 10 STON to unit 1234";
@@ -6079,8 +6152,13 @@ int Game::GenRules(const AString &rules, const AString &css,
 			"structure.";
 		temp += " For long distance transport between quartermasters, the "
 			"issuing unit must also be a quartermaster and be the owner of "
-			"a transport structure.  Use of this order counts as trade "
-			"activity in the hex.";
+			"a transport structure.";
+		// Gated like the BUILD text on BUILD_NO_TRADE: CheckTransportOrders skips the TRADE
+		// ActivityCheck entirely when TRANSPORT_NO_TRADE is set (it is in NewOrigins).
+		if (!Globals->TRANSPORT_NO_TRADE) {
+			temp += "  Use of this order counts as trade activity in the "
+				"hex.";
+		}
 		f.Paragraph(temp);
 		f.Paragraph("Examples:");
 		temp = "Transport 10 STON to unit 1234";
