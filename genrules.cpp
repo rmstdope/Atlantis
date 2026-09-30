@@ -70,163 +70,84 @@ int StudyRate(int days, int exp)
 	return rate;
 }
 
-void writeDelimetedList(std::ostringstream& buffer, const std::string &delimeter, const std::vector<std::string>& items) {
-	bool next = false;
-	for (auto &item : items) {
-		if (next) {
-			buffer << delimeter;
-		}
-
-		buffer << item;
-		next = true;
+// "a", "a and b", "a, b and c" (or "or" instead of "and").
+static std::string joinList(const std::vector<std::string>& items, const char *last = "and") {
+	std::string out;
+	for (size_t n = 0; n < items.size(); n++) {
+		if (n > 0) out += (n == items.size() - 1) ? (std::string(" ") + last + " ") : ", ";
+		out += items[n];
 	}
+	return out;
 }
 
+// Point usage in FactionTypes order -- the order the turn report uses -- e.g.
+// "3 points on Martial and 2 points on Magic". (fac.type is an unordered_map, so iterating it
+// directly gave an arbitrary order.)
 void writeFactionPointUsage(std::ostringstream& buffer, Faction &fac) {
 	std::vector<std::string> items;
-	for (auto &kv : fac.type) {
-		int value = kv.second;
-		if (value <= 0) {
-			continue;
-		}
-
-		items.push_back(std::to_string(value) + " " + plural(value, "point", "points") + " on " + kv.first);
+	for (auto &ft : *FactionTypes) {
+		int value = fac.type[ft];
+		if (value <= 0) continue;
+		items.push_back(std::to_string(value) + " " + plural(value, "point", "points") + " on " + ft);
 	}
-
-	writeDelimetedList(buffer, ", ", items);
+	buffer << joinList(items);
 }
 
+// Exactly the string the turn report shows for a faction type ("Martial 3, Magic 2").
 void writeFactionDefinition(std::ostringstream& buffer, Faction &fac) {
-	std::vector<std::string> items;
-	for (auto &kv : fac.type) {
-		int value = kv.second;
-		if (value <= 0) {
-			continue;
-		}
-
-		items.push_back(kv.first + " " + std::to_string(value));
-	}
-
-	writeDelimetedList(buffer, " ", items);
+	buffer << fac.FactionTypeStr().Str();
 }
 
+// Writes "would be able to ... [, but could not ...]" for a faction type. Every number comes
+// from the ruleset's limit tables (AllowedMartial/Taxes/Trades/Mages/Apprentices/
+// QuarterMasters/Tacticians), including limits that are not zero at 0 points -- NewOrigins
+// allows 1 mage and 1 apprentice with no Magic points -- so the text can't contradict the
+// table printed above it.
 void Game::WriteFactionTypeDescription(std::ostringstream& buffer, Faction &fac) {
-	int nm = AllowedMages(&fac);
-	int na = AllowedApprentices(&fac);
-	int nq = AllowedQuarterMasters(&fac);
-	int nt = AllowedTrades(&fac);
-	int nw = AllowedTaxes(&fac);
-	int nma = AllowedMartial(&fac);
+	auto count = [](int n, const char *one, const char *many) {
+		return std::to_string(n) + " " + plural(n, one, many);
+	};
+	std::vector<std::string> can, cannot, have, haveNone;
 
-	int count = 0;
-
-	std::vector<std::string> missingTypes;
-	std::vector<std::string> types;
-	for (auto &key : *FactionTypes) {
-		int value = fac.type[key];
-		if (value > 0) {
-			types.push_back(key);
-		}
-		else {
-			missingTypes.push_back(key);
-		}
-	}
-
-	for (auto &key : types) {
-		if (count > 0) {
-			if (count == (int)types.size() - 1) {
-				buffer << ", and ";
-			}
-			else {
-				buffer << ", ";
-			}
-		}
-
-		if (key == F_WAR) {
-			buffer << "tax " << nw << " " << plural(nw, "region", "regions");
-		}
-
-		if (key == F_TRADE) {
-			buffer << "perform trade in " << nt << " " << plural(nt, "region", "regions");
-		}
-
-		if (key == F_MAGIC) {
-			buffer << "have " << nm << " " << plural(nm, "mage", "mages");
-			if (Globals->APPRENTICES_EXIST) {
-				buffer << " as well as " << na << " " << Globals->APPRENTICE_NAME;
-				if (na > 1) {
-					buffer << "s";
-				}
-			}
-		}
-
-		if (key == F_MARTIAL) {
-			if (Globals->FACTION_ACTIVITY == FactionActivityRules::MARTIAL) {
-				buffer << "perform tax or trade in " << nma << " " << plural(nma, "region", "regions");
-			}
-			
-			if (Globals->FACTION_ACTIVITY == FactionActivityRules::MARTIAL_MERGED) { 
-				buffer << "perform tax and trade in " << nma << " " << plural(nma, "region", "regions");
-			}
-		}
-
-		count++;
-	}
-
-	if (Globals->APPRENTICES_EXIST && na > 0) {
-		buffer << ", as well have " << na << " " << Globals->APPRENTICE_NAME;
-		if (na > 1) {
-			buffer << "s";
+	if (Globals->FACTION_ACTIVITY == FactionActivityRules::DEFAULT) {
+		int nw = AllowedTaxes(&fac);
+		int nt = AllowedTrades(&fac);
+		if (nw > 0) can.push_back("tax in " + count(nw, "region", "regions"));
+		else cannot.push_back("tax in any region");
+		if (nt > 0) can.push_back("perform trade in " + count(nt, "region", "regions"));
+		else cannot.push_back("perform trade in any region");
+	} else {
+		int nma = AllowedMartial(&fac);
+		bool merged = Globals->FACTION_ACTIVITY == FactionActivityRules::MARTIAL_MERGED;
+		if (nma > 0) {
+			can.push_back(std::string("perform ") + (merged ? "tax and trade" : "tax or trade") +
+				" in " + count(nma, "region", "regions"));
+		} else {
+			cannot.push_back("tax or trade in any region");
 		}
 	}
 
-	if (Globals->TRANSPORT & GameDefs::ALLOW_TRANSPORT && nq > 0) {
-		buffer << ", and " << nq << " quartermaster";
-		if (nq > 1) {
-			buffer << "s";
-		}
+	std::string apprentices = std::string(Globals->APPRENTICE_NAME) + "s";
+	struct Limit { int n; std::string one, many; bool shown; };
+	Limit limits[] = {
+		{ AllowedMages(&fac), "mage", "mages", true },
+		{ AllowedApprentices(&fac), Globals->APPRENTICE_NAME, apprentices,
+			(bool) Globals->APPRENTICES_EXIST },
+		{ AllowedQuarterMasters(&fac), "quartermaster", "quartermasters",
+			(bool) (Globals->TRANSPORT & GameDefs::ALLOW_TRANSPORT) },
+		{ AllowedTacticians(&fac), "tactician", "tacticians", (bool) Globals->TACTICS_NEEDS_WAR },
+	};
+	for (auto &l : limits) {
+		if (!l.shown) continue;
+		if (l.n > 0) have.push_back(count(l.n, l.one.c_str(), l.many.c_str()));
+		else haveNone.push_back(l.many);
 	}
+	if (!have.empty()) can.push_back("have " + joinList(have));
+	if (!haveNone.empty()) cannot.push_back("have any " + joinList(haveNone, "or"));
 
-	if (missingTypes.size() > 0) {
-		buffer << ", but ";
-	}
-
-	count = 0;
-	for (auto &fp : missingTypes) {
-		if (count > 0) {
-			if (count == (int)missingTypes.size() - 1) {
-				buffer << ", and ";
-			}
-			else {
-				buffer << ", ";
-			}
-		}
-
-		if (fp == F_WAR) {
-			buffer << "could not perform tax in any regions";
-		}
-
-		if (fp == F_TRADE) {
-			buffer << "could not perform trade in any regions";
-		}
-
-		if (fp == F_MAGIC) {
-			buffer << "could not possess any mages";
-		}
-
-		if (fp == F_MARTIAL) {
-			buffer << "could not perform tax or trade in regions";
-		}
-
-		count++;
-	}
-
-	if (Globals->APPRENTICES_EXIST && na <= 0) {
-		buffer << ", as well could not possess any" << Globals->APPRENTICE_NAME << "s";
-	}
-
-	if (Globals->TRANSPORT & GameDefs::ALLOW_TRANSPORT && nq <= 0) {
-		buffer << ", and could not possess any quartermasters";
+	if (!can.empty()) buffer << "would be able to " << joinList(can);
+	if (!cannot.empty()) {
+		buffer << (can.empty() ? "" : ", but ") << "could not " << joinList(cannot, "or");
 	}
 }
 
@@ -675,6 +596,14 @@ int Game::GenRules(const AString &rules, const AString &css,
 		"survives, the faction is not wiped out.  (If your faction is "
 		"wiped out, you can rejoin the game with a new starting "
 		"character.)";
+	// Game::RemoveInactiveFactions removes a faction whose last orders are MAX_INACTIVE_TURNS
+	// or more turns old; Faction::WriteReport starts warning 3 turns before that.
+	if (Globals->MAX_INACTIVE_TURNS != -1) {
+		temp += AString(" A faction that sends no orders for ") +
+			Globals->MAX_INACTIVE_TURNS + " turns in a row is also removed from "
+			"the game; your turn report warns you when this is about to "
+			"happen.";
+	}
 	f.Paragraph(temp);
 	Faction fac;
 
@@ -904,7 +833,7 @@ int Game::GenRules(const AString &rules, const AString &css,
 
 		buffer << "This faction's type would appear as \"";
 		writeFactionDefinition(buffer, fac);
-		buffer << "\", and would be able to ";
+		buffer << "\", and ";
 		WriteFactionTypeDescription(buffer, fac);
 		buffer << ".";
 
@@ -930,7 +859,7 @@ int Game::GenRules(const AString &rules, const AString &css,
 
 		buffer << "This faction's type would appear as \"";
 		writeFactionDefinition(buffer, fac);
-		buffer << "\", and would be able to ";
+		buffer << "\", and ";
 		WriteFactionTypeDescription(buffer, fac);
 		buffer << ".";
 
@@ -954,9 +883,32 @@ int Game::GenRules(const AString &rules, const AString &css,
 			f.Paragraph(temp);
 		}
 	}
-	temp = "When a faction starts the game, it is given a one-man unit and ";
-	temp += Globals->START_MONEY;
-	temp += " silver in unclaimed money.  Unclaimed money is cash that your "
+	{
+		// Every ruleset's SetupFaction sets unclaimed = START_MONEY + TurnNumber() * K and
+		// returns at once for a faction with noStartLeader, so probing it with a temporary
+		// faction on turns 1 and 2 gives the starting silver and the per-turn extra without
+		// hard-coding K (300 in NewOrigins). year/month are restored afterwards.
+		int saveYear = year, saveMonth = month;
+		Faction probe;
+		probe.noStartLeader = 1;
+		year = 1; month = 0;
+		SetupFaction(&probe);
+		int firstTurn = probe.unclaimed;
+		month = 1;
+		SetupFaction(&probe);
+		int perTurn = probe.unclaimed - firstTurn;
+		year = saveYear; month = saveMonth;
+
+		temp = "When a faction starts the game, it is given a one-man unit and ";
+		temp += firstTurn;
+		temp += " silver in unclaimed money";
+		if (perTurn > 0) {
+			temp += AString(" (a faction that joins later gets ") + perTurn +
+				" silver more for each turn the game has been running)";
+		}
+		temp += ".";
+	}
+	temp += "  Unclaimed money is cash that your "
 		"whole faction has access to, but cannot be taken away in battle ("
 		"silver in a unit's possessions can be taken in battle).  This allows "
 		"a faction to get started without presenting an enticing target for "
