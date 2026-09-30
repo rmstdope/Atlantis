@@ -3258,13 +3258,73 @@ int Game::GenRules(const AString &rules, const AString &css,
 	temp += "This bonus in production is available to any unit in the "
 		"region; there is no need to be inside the structure.";
 	f.Paragraph(temp);
+	// Mirrors ARegion::UpdateProducts (economy.cpp): step = base / 2, then for each
+	// completed structure aiding the product, step /= 2 and bonus += step. Every division
+	// rounds DOWN, so the 25% / 12.5% / 6.25% shares are each rounded down on their own, and
+	// the first share is 25% of the base rounded down. It runs in PostTurn, so a structure
+	// finished during a month counts from the next month; incomplete ones never count.
 	temp = "The first structure built in a region will increase the maximum "
 		"production of the related product by 25%; the amount added by each "
-		"additional structure will be half of the the effect of the previous "
-		"one.  (Note that if you build enough of the same type of structure "
-		"in a region, the new structures may not add _any_ to the production "
-		"level).";
+		"additional structure will be half of the effect of the previous one, "
+		"so 12.5% for the second, 6.25% for the third, and so on. Each of "
+		"these amounts is calculated from the region's normal production and "
+		"rounded down to a whole number on its own, so small amounts are soon "
+		"rounded down to nothing: if you build enough of the same type of "
+		"structure in a region, the new structures may not add any production "
+		"at all. Only completed structures count, and a structure finished "
+		"during a month raises the production from the following month.";
 	f.Paragraph(temp);
+	{
+		auto withStructures = [](int base, int count) {
+			int step = base / 2;
+			int bonus = 0;
+			for (int n = 0; n < count; n++) {
+				step /= 2;
+				bonus += step;
+			}
+			return base + bonus;
+		};
+		const int bases[] = { 20, 15 };
+		temp = "For example, here is the maximum production of a product in "
+			"two regions, one where it is normally 20 and one where it is "
+			"normally 15, with up to three structures:";
+		f.Paragraph(temp);
+		f.Enclose(1, "center");
+		f.Enclose(1, "table border=\"1\"");
+		f.Enclose(1, "tr");
+		f.TagText("th", "Normal production");
+		f.TagText("th", "No structure");
+		f.TagText("th", "1 structure");
+		f.TagText("th", "2 structures");
+		f.TagText("th", "3 structures");
+		f.Enclose(0, "tr");
+		for (int base : bases) {
+			f.Enclose(1, "tr");
+			f.Enclose(1, "td align=\"center\"");
+			f.PutStr(base);
+			f.Enclose(0, "td");
+			for (int count = 0; count <= 3; count++) {
+				int now = withStructures(base, count);
+				temp = AString(now);
+				if (count > 0) {
+					temp += AString(" (+") + (now - withStructures(base, count - 1)) + ")";
+				}
+				f.Enclose(1, "td align=\"center\"");
+				f.PutStr(temp);
+				f.Enclose(0, "td");
+			}
+			f.Enclose(0, "tr");
+		}
+		f.Enclose(0, "table");
+		f.Enclose(0, "center");
+		temp = "In the first region, the first structure adds 25% of 20, which "
+			"is 5. The second adds 12.5% of 20, which is 2.5, rounded down to "
+			"2. The third adds 6.25% of 20, which is 1.25, rounded down to 1. "
+			"In the second region, 25% of 15 is 3.75, so the first structure "
+			"only adds 3, the second adds 1 (1.875 rounded down), and the "
+			"third adds nothing (0.9375 rounded down).";
+		f.Paragraph(temp);
+	}
 	f.LinkRef("tabletradestructures");
 	f.Enclose(1, "center");
 	f.Enclose(1, "table border=\"1\"");
@@ -3358,11 +3418,88 @@ int Game::GenRules(const AString &rules, const AString &css,
 			"in must have a northwest road, and the hex it is moving into "
 			"must have a southeast road.";
 		f.Paragraph(temp);
-		temp = "To gain an economy bonus, a hex must have roads that connect "
-			"to roads in at least two adjoining hexes.  The economy bonus "
-			"for the connected roads raises the wages in the region by 1 "
-			"point.";
+		// The old text ("at least two adjoining hexes", "raises the wages by 1 point") no longer
+		// matched the engine. ARegion::RoadDevelopment (economy.cpp) follows connected roads
+		// via RoadDevelopmentBonus/TraceConnectedRoad (aregion.cpp), up to 16 hexes: each
+		// reached hex gives +1 for a town, +1 if its development > ours + 9 (+2 per hop), +1 if
+		// development * 2 > ours * 5. A hex without a town gets half. The points are converted
+		// to development-equivalent with diminishing returns (5 each at first, capped ~45) and
+		// added in ARegion::Wages; they also raise the odds of development rising (PostTurn).
+		temp = "To gain an economy bonus, a hex's roads must connect to roads "
+			"in neighboring hexes. The bonus depends on where the connected "
+			"roads lead: every hex that can be reached along connected roads, "
+			"up to 16 hexes away, gives a bonus point if it contains a "
+			"settlement, another if it is more developed than this hex, and "
+			"another if it is much more developed. A hex that has a settlement "
+			"gets all of these points, and a hex without one gets half of them "
+			"(rounded down). The bonus raises the hex's wages, typically by a "
+			"fraction of a silver up to a few silver per man, and makes its "
+			"development rise faster. The first points count the most, and the "
+			"total bonus is limited, so a large road network gives diminishing "
+			"returns.";
 		f.Paragraph(temp);
+		{
+			// Copies of the two engine formulas, kept here so the table below is computed rather
+			// than hand-written. If ARegion::Wages() or ARegion::RoadDevelopment() change, change
+			// these to match.
+			auto wagesFor = [](int dv) {          // ARegion::Wages(), without the town term
+				int wages = 0, level = 1, last = 0;
+				while (dv >= level) {
+					wages++;
+					last = level;
+					level += wages + 1;
+				}
+				wages *= 10;
+				if (dv > last) wages += 10 * (dv - last) / (level - last);
+				return wages;                     // in tenths of a silver
+			};
+			auto roadDevelopment = [](int points) { // conversion loop in ARegion::RoadDevelopment()
+				int bonus = 5, leveloff = 1, plateau = 4, total = 0;
+				while (points > 0 && total < 46) {
+					points--;
+					if (leveloff >= plateau && bonus > 1) {
+						bonus--;
+						leveloff = 1;
+						plateau--;
+					}
+					leveloff++;
+					total += bonus;
+				}
+				return total;
+			};
+			auto money = [](int tenths) {
+				return AString("$") + (tenths / 10) + "." + (tenths % 10);
+			};
+			const int devs[] = { 20, 40, 70 };
+			const int points[] = { 1, 2, 4, 8 };
+			temp = "This table shows how the bonus raises the wages in a hex "
+				"without a settlement, for three hexes with different wages. The "
+				"points are the ones the hex actually receives, after they have "
+				"been halved:";
+			f.Paragraph(temp);
+			f.Enclose(1, "center");
+			f.Enclose(1, "table border=\"1\"");
+			f.Enclose(1, "tr");
+			f.TagText("th", "Wages without a road bonus");
+			for (int p : points) {
+				f.TagText("th", AString(p) + (p == 1 ? " point" : " points"));
+			}
+			f.Enclose(0, "tr");
+			for (int dev : devs) {
+				f.Enclose(1, "tr");
+				f.Enclose(1, "td align=\"center\"");
+				f.PutStr(money(wagesFor(dev)));
+				f.Enclose(0, "td");
+				for (int p : points) {
+					f.Enclose(1, "td align=\"center\"");
+					f.PutStr(money(wagesFor(dev + roadDevelopment(p))));
+					f.Enclose(0, "td");
+				}
+				f.Enclose(0, "tr");
+			}
+			f.Enclose(0, "table");
+			f.Enclose(0, "center");
+		}
 		f.LinkRef("tableroadstructures");
 		f.Enclose(1, "center");
 		f.Enclose(1, "table border=\"1\"");
