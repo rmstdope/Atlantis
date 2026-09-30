@@ -259,6 +259,24 @@ int Game::GenRules(const AString &rules, const AString &css,
 		return 0;
 	}
 
+	// Which faction areas govern taxing and trade. With FACTION_ACTIVITY DEFAULT they are War
+	// and Trade; with MARTIAL / MARTIAL_MERGED (NewOrigins) both are Martial (Game::Game()
+	// registers only Martial and Magic, and AllowedTaxes/AllowedTrades/AllowedMartial,
+	// AllowedQuarterMasters use the Martial points). Every sentence that names the faction
+	// area needed for taxing, pillaging, producing, building or quartermasters uses these, so
+	// a Martial ruleset never tells players about War or Trade factions.
+	int martial_areas = (Globals->FACTION_ACTIVITY != FactionActivityRules::DEFAULT);
+	AString tax_factions = martial_areas ?
+		"factions with Faction Points in Martial" : "War factions";
+	AString trade_factions = martial_areas ?
+		"factions with Faction Points in Martial" : "Trade factions";
+	auto capitalized = [](const AString &text) {
+		AString result = text;
+		std::string str = result.Str();
+		if (!str.empty()) str[0] = toupper(str[0]);
+		return AString(str.c_str());
+	};
+
 	if (introf.OpenByName(intro) == -1) {
 		return 0;
 	}
@@ -513,6 +531,7 @@ int Game::GenRules(const AString &rules, const AString &css,
 	f.TagText("li", f.Link("#give", "give"));
 	f.TagText("li", f.Link("#guard", "guard"));
 	f.TagText("li", f.Link("#hold", "hold"));
+	f.TagText("li", f.Link("#idle", "idle"));
 	f.TagText("li", f.Link("#join", "join"));
 	f.TagText("li", f.Link("#leave", "leave"));
 	f.TagText("li", f.Link("#move", "move"));
@@ -917,17 +936,20 @@ int Game::GenRules(const AString &rules, const AString &css,
 
 		f.Paragraph(buffer.str());
 
-		if (Globals->FACTION_POINTS>3) {
-			int rem=Globals->FACTION_POINTS-3;
+		// A new faction gets 1 point in every registered area (Faction::Faction), so the
+		// unspent count depends on how many areas the ruleset has (2 for Martial/Magic).
+		int areas = FactionTypes->size();
+		if (Globals->FACTION_POINTS > areas) {
+			int rem = Globals->FACTION_POINTS - areas;
 			temp = "Note that it is possible to have a faction type with "
 				"less than ";
 			temp += Globals->FACTION_POINTS;
 			temp += " points spent. In fact, a starting faction has one point spent on each of ";
-			for (auto &fp : *FactionTypes) {
-				temp += fp + ", ";
+			for (int n = 0; n < areas; n++) {
+				if (n > 0) temp += (n == areas - 1) ? " and " : ", ";
+				temp += (*FactionTypes)[n].c_str();
 			}
-			temp += "leaving ";
-			
+			temp += ", leaving ";
 			temp += AString(rem) + " point" + (rem==1?"":"s") + " unspent.";
 			f.Paragraph(temp);
 		}
@@ -1042,11 +1064,13 @@ int Game::GenRules(const AString &rules, const AString &css,
 		"as buying and selling commodities, or fighting an opposing "
 		"faction.  Each unit can also do exactly one action that takes up "
 		"the entire month, such as harvesting resources or moving from one "
-		"region to another.  The orders which take an entire month are ";
+		"region to another.  These are called month long orders, and they "
+		"are ";
 	temp += f.Link("#advance", "ADVANCE") + ", ";
 	temp += f.Link("#build", "BUILD") + ", ";
 	if (!(SkillDefs[S_ENTERTAINMENT].flags & SkillType::DISABLED))
 		temp += f.Link("#entertain", "ENTERTAIN") + ", ";
+	temp += f.Link("#idle", "IDLE") + ", ";
 	temp += f.Link("#move", "MOVE") + ", ";
 	if (Globals->TAX_PILLAGE_MONTH_LONG)
 		temp += f.Link("#pillage", "PILLAGE") + ", ";
@@ -1058,6 +1082,32 @@ int Game::GenRules(const AString &rules, const AString &css,
 		temp += f.Link("#tax", "TAX") + ", ";
 	temp += f.Link("#teach", "TEACH") + " and ";
 	temp += f.Link("#work", "WORK") + ".";
+	f.Paragraph(temp);
+	// Every Process*Order for a month long order deletes an existing one with an
+	// "Overwriting previous month-long order" error, except that ProcessMoveOrder and
+	// ProcessSailOrder append to an existing MOVE/SAIL. Game::DefaultWorkOrder then gives
+	// units without one WORK (or TAX with AUTOTAX), skipping the Nexus and NPC factions.
+	temp = "If you give a unit more than one month long order, only the last "
+		"one is carried out, and your report warns you that the earlier one "
+		"was overwritten. Several ";
+	temp += f.Link("#move", "MOVE") + " orders";
+	if (!(SkillDefs[S_SAILING].flags & SkillType::DISABLED)) {
+		temp += AString(", or several ") + f.Link("#sail", "SAIL") + " orders,";
+	}
+	temp += " are the exception: they are joined into one longer move.";
+	if (Globals->DEFAULT_WORK_ORDER) {
+		temp += " A unit that is not given any month long order will ";
+		temp += f.Link("#work", "WORK") + " for the month";
+		if (Globals->TAX_PILLAGE_MONTH_LONG) {
+			temp += " (or ";
+			temp += f.Link("#tax", "TAX") + ", if its ";
+			temp += f.Link("#autotax", "AUTOTAX") + " flag is set and it is "
+				"able to tax)";
+		}
+		temp += ", except in the Nexus. Use the ";
+		temp += f.Link("#idle", "IDLE") + " order for a unit that should do "
+			"nothing.";
+	}
 	f.Paragraph(temp);
 	f.LinkRef("world");
 	f.ClassTagText("div", "rule", "");
@@ -1679,6 +1729,16 @@ int Game::GenRules(const AString &rules, const AString &css,
 	}
 	temp += ".";
 	f.Paragraph(temp);
+	// Unit::Forbids / Game::DoAMoveOrder: a guard stops Unfriendly or Hostile units it can see
+	// and catch; the stopped unit's move ends; an ADVANCE attacks the guards instead.
+	temp = "A region may be guarded (see the ";
+	temp += f.Link("#guard", "GUARD") + " order). Units on guard stop "
+		"Unfriendly and Hostile units that they can see and catch from "
+		"entering the region, and a unit that is stopped cannot move any "
+		"further that month. A unit using the ";
+	temp += f.Link("#advance", "ADVANCE") + " order attacks the guards "
+		"instead.";
+	f.Paragraph(temp);
 	temp = "Units may also enter or exit structures while moving.  Moving "
 		"into or out of a structure does not use any movement points at "
 		"all.  Note that a unit can also use the ";
@@ -2172,11 +2232,11 @@ int Game::GenRules(const AString &rules, const AString &css,
 	// trigger the cap the next time the unit studies (or receives men).
 	temp = "If units are merged together, their skills are averaged out. "
 		"No rounding off is done; rather, the computer keeps track for each "
-		"unit of how many total months of training that unit has in each "
-		"skill, and the unit's skill level is based on the average number of "
-		"months per man. When units are split up, these months are divided "
-		"as evenly as possible among the people in the unit, and no months "
-		"are lost in the split.";
+		"unit of the total number of days of training it has in each skill, "
+		"and the unit's skill level is based on the average number of days "
+		"per man. When units are split up, these days are divided as evenly "
+		"as possible among the people in the unit, and no days are lost in "
+		"the split.";
 	if (Globals->RACES_EXIST) {
 		temp += " However, a unit's skill can never be higher than the "
 			"maximum level of the least capable race in it: if men who can "
@@ -2186,28 +2246,60 @@ int Game::GenRules(const AString &rules, const AString &css,
 			"next time it studies.";
 	}
 	f.Paragraph(temp);
-	temp = AString("Remember that level 1 needs ") + GetDaysByLevel(1) / 30 +
-		" month of training per man, level 2 needs " + GetDaysByLevel(2) / 30 +
-		" months, and level 3 needs " + GetDaysByLevel(3) / 30 + " months.";
-	f.Paragraph(temp);
-	f.Paragraph("Example of buying men:");
-	temp = "A unit of 10 men has 3 months of Mining training per man, 30 "
-		"months in total, which is level 2. It buys 5 more men. The unit "
-		"now has 15 men sharing the same 30 months, which is 2 months per "
-		"man, so its Mining drops to level 1. One more month of study brings "
-		"every man to 3 months, and the unit back to level 2.";
-	f.Paragraph(temp);
-	f.Paragraph("Example of giving men:");
-	temp = "Unit A has 10 men with 6 months of Mining each, 60 months in "
-		"total, which is level 3. Unit B has 10 men with 1 month each, 10 "
-		"months in total, which is level 1. A gives 5 men to B. The 5 men "
-		"take their share of A's training with them, 30 months. A keeps 5 "
-		"men and 30 months, which is still 6 months per man, so A stays at "
-		"level 3. B now has 15 men and 10 + 30 = 40 months, about 2.7 months "
-		"per man, so B is still level 1 (level 2 needs 3 months per man). "
-		"Skills that only one of the units knows are averaged over the new "
-		"number of men in the same way.";
-	f.Paragraph(temp);
+	{
+		// The examples are written as report lines. SkillList::Report shows
+		// "<name> [<abbr>] <level> (<days per man>)", with days per man = total / men rounded
+		// down (the total itself is kept exactly), and still shows a skill at level 0 while
+		// any training remains. Everything below is computed with the same engine functions
+		// (SkillStrs, GetLevelByDays, GetDaysByLevel) so it can't drift from the report.
+		auto shown = [](int total, int men) {
+			int perman = total / men;
+			return SkillStrs(S_COMBAT) + " " + GetLevelByDays(perman) + " (" +
+				perman + ")";
+		};
+		temp = "In your report, each skill is shown with its level, followed by "
+			"the number of days of training per man in brackets, for example ";
+		temp += shown(GetDaysByLevel(2), 1) + ". The number shown is rounded "
+			"down, but the unit keeps all of its training. Level 1 needs ";
+		temp += AString(GetDaysByLevel(1)) + " days of training per man, level 2 "
+			"needs " + GetDaysByLevel(2) + ", level 3 needs " + GetDaysByLevel(3) +
+			", level 4 needs " + GetDaysByLevel(4) + " and level 5 needs " +
+			GetDaysByLevel(5) + " days.";
+		if (!Globals->REQUIRED_EXPERIENCE) {
+			// StudyRateAdjustment returns a flat 30 days when REQUIRED_EXPERIENCE is 0.
+			temp += " A month of study gives 30 days of training.";
+		}
+		f.Paragraph(temp);
+
+		const int men = 10;
+		int total = GetDaysByLevel(2) * men;
+		f.Paragraph("Example of buying men:");
+		temp = AString("A unit of ") + men + " men shows " + shown(total, men) +
+			", which is " + total + " days of training in total. If it buys 20 "
+			"more men, the 30 men share the same " + total + " days, and the "
+			"unit shows " + shown(total, 30) + ". If it buys 21 men instead, "
+			"the 31 men have " + (total / 31) + " days each (rounded down), and "
+			"the unit shows " + shown(total, 31) + ", since level 1 needs " +
+			GetDaysByLevel(1) + " days.";
+		f.Paragraph(temp);
+
+		int totalA = GetDaysByLevel(3) * men;
+		int totalB = GetDaysByLevel(1) * men;
+		int moved = totalA * 5 / men;          // SkillList::Split: share of the men given
+		f.Paragraph("Example of giving men:");
+		temp = AString("Unit A has ") + men + " men and shows " +
+			shown(totalA, men) + ", which is " + totalA + " days in total. Unit B "
+			"has " + men + " men and shows " + shown(totalB, men) + ", which is " +
+			totalB + " days in total. A gives 5 men to B. The 5 men take their "
+			"share of A's training with them, " + moved + " days. A keeps 5 men "
+			"and " + (totalA - moved) + " days, and still shows " +
+			shown(totalA - moved, 5) + ". B now has 15 men and " + totalB +
+			" + " + moved + " = " + (totalB + moved) + " days, and shows " +
+			shown(totalB + moved, 15) + ", since level 2 needs " +
+			GetDaysByLevel(2) + " days. Skills that only one of the units knows "
+			"are averaged over the new number of men in the same way.";
+		f.Paragraph(temp);
+	}
 	f.LinkRef("skills_studying");
 	f.TagText("h3", "Studying:");
 	temp = "For a unit to gain level 1 of a skill, they must gain one "
@@ -2963,12 +3055,24 @@ int Game::GenRules(const AString &rules, const AString &css,
 		"description of the item.";
 	f.Paragraph(temp);
 
+	// temp used to be printed even when this branch was skipped, repeating the previous
+	// paragraph; the Paragraph call is now inside the branch.
 	if (Globals->FACTION_LIMIT_TYPE == GameDefs::FACLIM_FACTION_TYPES) {
-		temp = " Only Trade factions can issue ";
-		temp += f.Link("#produce", "PRODUCE") + " orders however, regardless "
-			"of skill levels.";
+		if (martial_areas) {
+			// PRODUCE of anything but silver calls ActivityCheck(TRADE), which for Martial
+			// rules counts against AllowedMartial -- zero regions with no Martial points.
+			temp = "Producing items counts as trade activity, so it counts "
+				"toward your faction's Martial region limit, and a faction "
+				"without Faction Points in Martial cannot issue ";
+			temp += f.Link("#produce", "PRODUCE") + " orders at all, regardless "
+				"of skill levels.";
+		} else {
+			temp = "Only Trade factions can issue ";
+			temp += f.Link("#produce", "PRODUCE") + " orders however, regardless "
+				"of skill levels.";
+		}
+		f.Paragraph(temp);
 	}
-	f.Paragraph(temp);
 	
 	temp = "Items which increase production may increase production of "
 		"advanced items in addition to the basic items listed.  Some of "
@@ -3167,7 +3271,7 @@ int Game::GenRules(const AString &rules, const AString &css,
 		if (Globals->BUILD_NO_TRADE) {
 			temp += "Any faction can issue ";
 		} else {
-			temp += "Again, only Trade factions can issue ";
+			temp += AString("Again, only ") + trade_factions + " can issue ";
 		}
 		temp += f.Link("#build", "BUILD") + " orders. ";
 	}
@@ -3588,9 +3692,14 @@ int Game::GenRules(const AString &rules, const AString &css,
 			"may be entered like other buildings.";
 		f.Paragraph(temp);
 		temp = "";
+		// Same gate as the buildings paragraph: ShipConstruction only checks trade activity
+		// when BUILD_NO_TRADE is off.
 		if (Globals->FACTION_LIMIT_TYPE == GameDefs::FACLIM_FACTION_TYPES) {
-			temp += "Only factions with at least one faction point spent on "
-				"trade can issue ";
+			if (Globals->BUILD_NO_TRADE) {
+				temp += "Any faction can issue ";
+			} else {
+				temp += AString("Only ") + trade_factions + " can issue ";
+			}
 			temp += f.Link("#build", "BUILD") + " orders. ";
 		}
 		temp += "Here is a table of the various ship types:";
@@ -3709,6 +3818,11 @@ int Game::GenRules(const AString &rules, const AString &css,
 	if (Globals->FACTION_LIMIT_TYPE == GameDefs::FACLIM_FACTION_TYPES)
 		temp += " or faction type";
 	temp += ".";
+	if (Globals->DEFAULT_WORK_ORDER) {
+		temp += " A unit that is not given any month long order works "
+			"automatically (see ";
+		temp += f.Link("#playing_turns", "Turns") + ").";
+	}
 	f.Paragraph(temp);
 	if (!(SkillDefs[S_ENTERTAINMENT].flags & SkillType::DISABLED)) {
 		f.LinkRef("economy_entertainment");
@@ -3735,13 +3849,13 @@ int Game::GenRules(const AString &rules, const AString &css,
 	f.LinkRef("economy_taxingpillaging");
 	f.TagText("h3", "Taxing/Pillaging:");
 	if (Globals->FACTION_LIMIT_TYPE == GameDefs::FACLIM_FACTION_TYPES)
-		temp = "War factions ";
+		temp = capitalized(tax_factions) + " ";
 	else
 		temp = "Factions ";
 	temp += "may collect taxes in a region.  This is done using the ";
 	temp += f.Link("#tax", "TAX") + " order (which is ";
 	if (!Globals->TAX_PILLAGE_MONTH_LONG) temp += "not ";
-	temp += "a full month order). The amount of tax money that can be "
+	temp += "a month long order). The amount of tax money that can be "
 		"collected each month in a region is shown in the region "
 		"description. ";
 	if (Globals->WHO_CAN_TAX & GameDefs::TAX_ANYONE) {
@@ -3943,7 +4057,7 @@ int Game::GenRules(const AString &rules, const AString &css,
 		"income is split evenly among all taxers.";
 	f.Paragraph(temp);
 	if (Globals->FACTION_LIMIT_TYPE == GameDefs::FACLIM_FACTION_TYPES)
-		temp = "War factions ";
+		temp = capitalized(tax_factions) + " ";
 	else
 		temp = "Factions ";
 	temp += "may also pillage a region. To do this requires the faction to "
@@ -3969,8 +4083,11 @@ int Game::GenRules(const AString &rules, const AString &css,
 	temp += f.Link("#pillage", "PILLAGE") + " orders issued by other "
 		"factions in the same region, regardless of your attitude towards "
 		"the faction in question, and they will attempt to prevent "
-		"Unfriendly units from entering the region.  Only units which are "
-		"able to tax may be on guard.  Units on guard ";
+		"Unfriendly and Hostile units that they can see and catch from "
+		"entering the region.  Only units which are able to tax may be on "
+		"guard, and there are further restrictions on who may guard a region; "
+		"see the ";
+	temp += f.Link("#guard", "GUARD") + " order.  Units on guard ";
 	if (has_stea)
 		temp += " are always visible regardless of Stealth skill, and ";
 	temp += "will be marked as being \"on guard\" in the region description.";
@@ -3980,7 +4097,7 @@ int Game::GenRules(const AString &rules, const AString &css,
 		f.LinkRef("economy_transport");
 		f.TagText("H3", "Transportation of goods");
 
-		temp = "Trade factions may train Quartermaster units. "
+		temp = capitalized(trade_factions) + " may train Quartermaster units. "
 			"A Quartermaster unit may accept ";
 		temp += f.Link("#transport", "TRANSPORT") + "ed items from "
 			"any unit within " + Globals->LOCAL_TRANSPORT + " hex";
@@ -4189,6 +4306,13 @@ int Game::GenRules(const AString &rules, const AString &css,
 	temp = "Ally means that you will fight to defend units of that faction "
 		"whenever they come under attack, if you have non-avoiding units in "
 		"the region where the attack occurs. ";
+	// ARegion::CanGuard with STRICT_GUARD: a new guard needs every existing guard to be Ally.
+	if (Globals->STRICT_GUARD) {
+		temp += "Also, while your units are on guard in a region, a unit of "
+			"another faction can only go on guard there if you have declared "
+			"its faction Ally (see the ";
+		temp += f.Link("#guard", "GUARD") + " order). ";
+	}
 	if (has_stea) {
 		temp += " You will also attempt to prevent any theft or "
 			"assassination attempts against units of the faction";
@@ -4804,7 +4928,7 @@ int Game::GenRules(const AString &rules, const AString &css,
 			f.Paragraph(temp);
 			temp = f.Link("#steal", "STEAL") + " and " +
 				f.Link("#assassinate", "ASSASSINATE") +
-				" are not full month orders, and do not interfere with other "
+				" are not month long orders, and do not interfere with other "
 				"activities, but a unit can only issue one " +
 				f.Link("#steal", "STEAL") + " order or one " +
 				f.Link("#assassinate", "ASSASSINATE") + " order in a month.";
@@ -4896,6 +5020,7 @@ int Game::GenRules(const AString &rules, const AString &css,
 			"here which also can support mages.  The description of a "
 			"building will tell you for certain.  The common buildings and "
 			"the mages a building of that type can support follows:";
+		f.Paragraph(temp);
 		f.LinkRef("tablemagebuildings");
 		f.Enclose(1, "center");
 		f.Enclose(1, "table border=\"1\"");
@@ -4998,7 +5123,7 @@ int Game::GenRules(const AString &rules, const AString &css,
 	temp += f.Link("#cast", "CAST") + " order. Because " +
 		f.Link("#cast", "CAST") + " takes an entire month, a mage may use "
 		"only one of this type of spell each turn. Note, however, that a ";
-	temp += f.Link("#cast", "CAST") + " order is not a full month order; "
+	temp += f.Link("#cast", "CAST") + " order is not a month long order; "
 		"a mage may still ";
 	temp += f.Link("#move", "MOVE") + ", ";
 	temp += f.Link("#study", "STUDY") + ", or use any other month long order. ";
@@ -5121,8 +5246,13 @@ int Game::GenRules(const AString &rules, const AString &css,
 			temp += "if their Observation level is high enough. ";
 		else
 			temp += "if they can see the criminal. ";
+		// Game::DoGuard1Orders refuses player guards while guardsmen are present; the
+		// guardsmen faction is Neutral (so Unit::Forbids never stops anyone) and its units
+		// have Hold set (they never join battles in neighbouring regions).
 		temp += "They are on guard, and will prevent other units from "
-			"taxing or pillaging. ";
+			"taxing or pillaging, and while they are on guard, player units "
+			"cannot go on guard in that region. They do not stop units from "
+			"entering the region, and they only fight in their own region. ";
 		if (Globals->START_CITIES_EXIST && Globals->SAFE_START_CITIES)
 			temp += "Except in the starting cities, the ";
 		else
@@ -5193,9 +5323,18 @@ int Game::GenRules(const AString &rules, const AString &css,
 			"deeper into the territory that is not connected with his preferred terrain.";
 		f.Paragraph(temp);
 
-		temp = "A small tip to the players about guarding: guarding will prevent monsters from spawning and attacking "
-			"player units, but in such a way players will not get any loot from monsters too. Monster hunting is a desirable "
-			"activity because it is fun, and you can get a great reward like silver, magical items, weapons, etc.";
+		// npc.cpp: no spawning in guarded regions; monthorders.cpp: wandering monsters never
+		// move into a guarded town; runorders.cpp CheckWMonAttack has no guard check; the
+		// Creatures faction is Neutral by default, so Unit::Forbids only stops a monster if
+		// the guard's faction has declared Creatures Unfriendly/Hostile (and sees/catches it).
+		temp = "A small tip to the players about guarding: guarding a region stops new monsters "
+			"from appearing there, and wandering monsters will not move into a town that is guarded. "
+			"It does not stop monsters that are already in the region, including monsters in lairs, "
+			"from attacking. Elsewhere, your guards only stop a wandering monster from entering if "
+			"your faction has declared the Creatures faction Unfriendly or Hostile, and can see and "
+			"catch the monster. Remember also that monsters that never appear give no loot. Monster "
+			"hunting is a desirable activity because it is fun, and you can get a great reward like "
+			"silver, magical items, weapons, etc.";
 		f.Paragraph(temp);
 
 		// Monster combat participation, derived from the ordinary muster rules (Game::GetSides /
@@ -5402,6 +5541,21 @@ int Game::GenRules(const AString &rules, const AString &css,
 		"useful for orders which your units repeat for several months in a "
 		"row.";
 	f.Paragraph(temp);
+	// Orders are processed in two ways: some (CLAIM, DECLARE, FACTION, FORM, TURN and the
+	// flag orders) are applied by the parser while the orders file is read; the rest are
+	// stored and run in the phases of Game::RunOrders (see Sequence of Events).
+	temp = "Most orders are carried out at a fixed point in the turn, as "
+		"described in the ";
+	temp += f.Link("#sequenceofevents", "Sequence of Events") + ". Each unit "
+		"may also have one month long order (see ";
+	temp += f.Link("#playing_turns", "Turns") + "). A few orders, such as ";
+	temp += f.Link("#claim", "CLAIM") + ", " + f.Link("#declare", "DECLARE") +
+		", " + f.Link("#faction", "FACTION") + ", " + f.Link("#form", "FORM") +
+		" and orders that set a unit's flags, such as ";
+	temp += f.Link("#behind", "BEHIND") + " or " + f.Link("#hold", "HOLD") +
+		", take effect as soon as your orders are read, before anything else "
+		"happens in the turn.";
+	f.Paragraph(temp);
 	f.LinkRef("orders_abbreviations");
 	f.TagText("h3", "Abbreviations:");
 	temp = "All common items and skills have abbreviations that can be used "
@@ -5518,9 +5672,19 @@ int Game::GenRules(const AString &rules, const AString &css,
 	f.ClassTagText("div", "rule", "");
 	f.LinkRef("autotax");
 	f.TagText("h4", "AUTOTAX [flag]");
-	temp = "AUTOTAX 1 causes the unit to attempt to tax every turn "
-		"(without requiring the TAX order) until the flag is unset. "
-		"AUTOTAX 0 unsets the flag.";
+	if (Globals->TAX_PILLAGE_MONTH_LONG) {
+		// Game::DefaultWorkOrder only applies AUTOTAX to units without a month long order
+		// (never in the Nexus); RunTaxOrders clears the flag if the unit cannot tax.
+		temp = "AUTOTAX 1 causes the unit to ";
+		temp += f.Link("#tax", "TAX") + " in every month in which it has "
+			"not been given another month long order, instead of working, "
+			"until the flag is unset. If the unit turns out not to be able to "
+			"tax, the flag is removed. AUTOTAX 0 unsets the flag.";
+	} else {
+		temp = "AUTOTAX 1 causes the unit to attempt to tax every turn "
+			"(without requiring the TAX order) until the flag is unset. "
+			"AUTOTAX 0 unsets the flag.";
+	}
 	f.Paragraph(temp);
 	f.Paragraph("Example:");
 	temp = "To cause the unit to attempt to tax every turn.";
@@ -5790,6 +5954,7 @@ int Game::GenRules(const AString &rules, const AString &css,
 		f.CommandExample(temp, temp2);
 		temp = "Distribute all except 10 SWOR to unit 3432";
 		temp2 = "DISTRIBUTE 3432 ALL SWOR EXCEPT 10";
+		f.CommandExample(temp, temp2);
 	}
 
 	f.ClassTagText("div", "rule", "");
@@ -6127,11 +6292,49 @@ int Game::GenRules(const AString &rules, const AString &css,
 	f.ClassTagText("div", "rule", "");
 	f.LinkRef("guard");
 	f.TagText("h4", "GUARD [flag]");
-	temp = "GUARD 1 sets the unit issuing the order to prevent non-Friendly "
-		"units from collecting taxes in the region, and to prevent any "
-		"units not your own from pillaging the region.  Guarding units "
-		"will also attempt to prevent Unfriendly units from entering the "
-		"region.  GUARD 0 cancels Guard status.";
+	// Authoritative description of guarding; other sections link here. Mirrors
+	// ARegion::CanTax (blocked unless the guard's faction is Friendly+ to the taxer),
+	// ARegion::CanPillage (any other faction), Unit::Forbids (Unfriendly/Hostile units the
+	// guard can see and catch) and Game::DoGuard1Orders (restrictions; GUARD_SET only becomes
+	// GUARD_GUARD there, after the PILLAGE and TAX phases in RunOrders).
+	temp = "GUARD 1 puts the unit issuing the order on guard. Units on guard "
+		"prevent units of factions that you have not declared Friendly (or "
+		"Ally) from collecting taxes in the region, and prevent units of any "
+		"other faction from pillaging it. They also stop Unfriendly and "
+		"Hostile units from entering the region, but only units that your "
+		"faction can see and catch (see ";
+	temp += f.Link("#com_attacking", "attacking") + "). GUARD 0 cancels "
+		"Guard status.";
+	f.Paragraph(temp);
+	temp = "A unit can only be on guard if:";
+	f.Paragraph(temp);
+	f.Enclose(1, "ul");
+	f.TagText("li", "it is able to tax (see the TAX order);");
+	if (!Globals->OCEAN_GUARD) {
+		f.TagText("li", "it is not in an ocean region;");
+	}
+	if (Globals->STRICT_GUARD) {
+		f.TagText("li", "every unit of another faction that is already on "
+			"guard in the region belongs to a faction that has declared the "
+			"unit's faction Ally. In practice, only one faction and its allies "
+			"can guard a region at the same time;");
+	}
+	if (Globals->CITY_MONSTERS_EXIST) {
+		f.TagText("li", "there are no city or town guardsmen on guard in the "
+			"region.");
+	}
+	f.Enclose(0, "ul");
+	temp = "A GUARD 1 order takes effect after ";
+	temp += f.Link("#tax", "TAX") + " and " + f.Link("#pillage", "PILLAGE") +
+		" orders have been carried out, so it does not stop taxing or "
+		"pillaging in the month it is given, but it does stop units from "
+		"entering the region later that month. A unit that moves or sails "
+		"is taken off guard.";
+	if (Globals->WANDERING_MONSTERS_EXIST) {
+		temp += " Guarding also stops new monsters from appearing in the "
+			"region (see ";
+		temp += f.Link("#nonplayers_monsters", "Wandering Monsters") + ").";
+	}
 	f.Paragraph(temp);
 	temp = "The Guard and Avoid Combat flags are mutually exclusive; "
 		"setting one automatically cancels the other.";
@@ -6152,6 +6355,24 @@ int Game::GenRules(const AString &rules, const AString &css,
 	f.Paragraph("Example:");
 	temp = "Instruct the unit to avoid combat in other regions.";
 	temp2 = "HOLD 1";
+	f.CommandExample(temp, temp2);
+
+	// ProcessIdleOrder: a month long order that replaces any other; RunIdleOrders reports
+	// "Sits idle." It exists mainly to stop the default WORK order.
+	f.ClassTagText("div", "rule", "");
+	f.LinkRef("idle");
+	f.TagText("h4", "IDLE");
+	temp = "Do nothing for the month. IDLE is a month long order";
+	if (Globals->DEFAULT_WORK_ORDER) {
+		temp += ", and its main use is to stop a unit from ";
+		temp += f.Link("#work", "WORK") + "ing, which a unit without any "
+			"month long order does automatically";
+	}
+	temp += ".";
+	f.Paragraph(temp);
+	f.Paragraph("Example:");
+	temp = "Do nothing this month.";
+	temp2 = "IDLE";
 	f.CommandExample(temp, temp2);
 
 	f.ClassTagText("div", "rule", "");
@@ -6497,6 +6718,11 @@ int Game::GenRules(const AString &rules, const AString &css,
 	temp += f.Link("#tax", "TAX") + " order and the PILLAGE order are ";
 	temp += "mutually exclusive; a unit may only attempt to do one in a "
 		"turn.";
+	if (Globals->TAX_PILLAGE_MONTH_LONG) {
+		temp += " PILLAGE is a month long order, like TAX. See the section on ";
+		temp += f.Link("#economy_taxingpillaging", "taxing and pillaging") +
+			" for when pillaging is possible.";
+	}
 	f.Paragraph(temp);
 	f.Paragraph("Example:");
 	temp = "Pillage the current hex.";
@@ -6840,7 +7066,7 @@ int Game::GenRules(const AString &rules, const AString &css,
 	f.TagText("h4", "TAX");
 	temp = "Attempt to collect taxes from the region. ";
 	if (Globals->FACTION_LIMIT_TYPE == GameDefs::FACLIM_FACTION_TYPES)
-		temp += "Only War factions may collect taxes, and then ";
+		temp += AString("Only ") + tax_factions + " may collect taxes, and then ";
 	else
 		temp += "Taxes may be collected ";
 	temp += "only if there are no non-Friendly units on guard. Only "
@@ -6848,6 +7074,12 @@ int Game::GenRules(const AString &rules, const AString &css,
 		"and the ";
 	temp += f.Link("#pillage", "PILLAGE") + " order are mutually exclusive; "
 		"a unit may only attempt to do one in a turn.";
+	if (Globals->TAX_PILLAGE_MONTH_LONG) {
+		temp += " TAX is a month long order: it replaces any other month long "
+			"order the unit has been given, and a later month long order "
+			"replaces it. It is still carried out early in the turn, before "
+			"movement.";
+	}
 	f.Paragraph(temp);
 	f.Paragraph("Example:");
 	temp = "Attempt to collect taxes.";
@@ -6934,15 +7166,20 @@ int Game::GenRules(const AString &rules, const AString &css,
 		"ENDTURN line.";
 	f.Paragraph(temp);
 	f.Paragraph("Examples:");
+	// With TAX_PILLAGE_MONTH_LONG, PILLAGE and ADVANCE are both month long orders, so a
+	// block containing both would keep only the ADVANCE ("Overwriting previous DELAYED
+	// month-long order"); the example then uses PILLAGE on its own.
+	int pillage_alone = Globals->TAX_PILLAGE_MONTH_LONG;
 	temp = "Study combat this month, move north next month, and then in two "
-		"months, pillage and advance north.";
+		"months, ";
+	temp += pillage_alone ? "pillage the region." : "pillage and advance north.";
 	temp2 = "STUDY COMB\n";
 	temp2 += "TURN\n";
 	temp2 += "    MOVE N\n";
 	temp2 += "ENDTURN\n";
 	temp2 += "TURN\n";
 	temp2 += "    PILLAGE\n";
-	temp2 += "    ADVANCE N\n";
+	if (!pillage_alone) temp2 += "    ADVANCE N\n";
 	temp2 += "ENDTURN";
 	f.CommandExample(temp, temp2);
 	temp = "After the turn, the orders for that unit would look as "
@@ -6950,7 +7187,7 @@ int Game::GenRules(const AString &rules, const AString &css,
 	temp2 = "MOVE N\n";
 	temp2 += "TURN\n";
 	temp2 += "    PILLAGE\n";
-	temp2 += "    ADVANCE N\n";
+	if (!pillage_alone) temp2 += "    ADVANCE N\n";
 	temp2 += "ENDTURN";
 	f.CommandExample(temp, temp2);
 	temp = "Set up a simple cash caravan.";
@@ -6978,11 +7215,13 @@ int Game::GenRules(const AString &rules, const AString &css,
 	temp2 += "ENDTURN";
 	f.CommandExample(temp, temp2);
 	temp = "The orders in a TURN block will be inserted into the unit's orders "
-			"template when there are no month-long orders remaining to "
+			"template when there are no month long orders remaining to "
 			"be executed.  In particular, if the unit does not have enough "
 			"movement points to cover the full distance of a MOVE or SAIL "
 			"command, the movement commands will automatically be completed "
-			"over multiple turns before executing the next TURN block.";
+			"over multiple turns before executing the next TURN block. In the "
+			"same way, a repeating month long order (such as @WORK) keeps the "
+			"next TURN block from starting.";
 	f.Paragraph(temp);
 
 	if (Globals->USE_WEAPON_ARMOR_COMMAND) {
@@ -7031,6 +7270,16 @@ int Game::GenRules(const AString &rules, const AString &css,
 	f.LinkRef("work");
 	f.TagText("h4", "WORK");
 	temp = "Spend the month performing manual work for wages.";
+	if (Globals->DEFAULT_WORK_ORDER) {
+		temp += " A unit that is not given any month long order works "
+			"automatically";
+		if (Globals->TAX_PILLAGE_MONTH_LONG) {
+			temp += " (or taxes, if its ";
+			temp += f.Link("#autotax", "AUTOTAX") + " flag is set)";
+		}
+		temp += ", except in the Nexus. To stop this, use the ";
+		temp += f.Link("#idle", "IDLE") + " order.";
+	}
 	f.Paragraph(temp);
 	f.Paragraph("Example:");
 	temp = "Work all month.";
@@ -7194,15 +7443,16 @@ int Game::GenRules(const AString &rules, const AString &css,
 	f.Enclose(1, "ul");
 	temp = f.Link("#teach", "TEACH") + " orders are processed.";
 	f.TagText("li", temp);
+	temp = f.Link("#idle", "IDLE") + " orders are processed.";
+	f.TagText("li", temp);
 	temp = f.Link("#study", "STUDY") + " orders are processed.";
 	f.TagText("li", temp);
 	temp = "Manufacturing ";
 	temp += f.Link("#produce", "PRODUCE");
 	temp += " orders (those that produce items from other items, such "
-		"as using the weaponsmith skill to make swords out of iron) "
-		"are processed.";
-	f.TagText("li", temp);
-	temp = f.Link("#build", "BUILD") + " orders are processed.";
+		"as using the weaponsmith skill to make swords out of iron) and ";
+	temp += f.Link("#build", "BUILD") + " orders are processed together, in "
+		"the order the units appear in the region.";
 	f.TagText("li", temp);
 	temp = "Primary ";
 	temp += f.Link("#produce", "PRODUCE");
