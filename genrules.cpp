@@ -663,27 +663,67 @@ int Game::GenRules(const AString &rules, const AString &css,
 		temp = "Each faction has a type; this is decided by the player, "
 			"and determines what the faction may do.  The faction has ";
 		temp += Globals->FACTION_POINTS;
-		temp += " Faction Points, which may be spent on any of the 3 "
-			"Faction Areas, War, Trade, and Magic.  The faction type may "
-			"be changed at the beginning of each turn, so a faction can "
-			"change and adapt to the conditions around it.  Faction Points "
-			"spent on War determine the number of regions in which factions "
-			"can obtain income by taxing or pillaging";
-		if (Globals->TACTICS_NEEDS_WAR) {
-			temp += ", and also determines the number of level 5 tactics "
-				"leaders (tacticians) that a faction can train";
-		}
-		temp += ". Faction Points spent "
-			"on Trade determine the number of regions in which a faction "
-			"may conduct trade activity. Trade activity includes producing "
-			"goods and materials";
-		if (!Globals->BUILD_NO_TRADE) {
-			temp += ", building ships and buildings";
-		}
-		temp += ". ";
-		if (qm_exist) {
-			temp += "Faction points spent on Trade also determine the "
-				"number of quartermaster units a trade faction can have. ";
+		// The faction areas depend on FACTION_ACTIVITY: Game::Game() registers War/Trade/Magic
+		// for DEFAULT but Martial/Magic otherwise, and ParseFactionType accepts only the
+		// registered names. Describing War and Trade to a Martial ruleset (as this paragraph
+		// used to) tells players to use areas the FACTION order rejects.
+		if (Globals->FACTION_ACTIVITY == FactionActivityRules::DEFAULT) {
+			temp += " Faction Points, which may be spent on any of the 3 "
+				"Faction Areas, War, Trade, and Magic.  The faction type may "
+				"be changed at the beginning of each turn, so a faction can "
+				"change and adapt to the conditions around it.  Faction Points "
+				"spent on War determine the number of regions in which factions "
+				"can obtain income by taxing or pillaging";
+			if (Globals->TACTICS_NEEDS_WAR) {
+				temp += ", and also determines the number of level 5 tactics "
+					"leaders (tacticians) that a faction can train";
+			}
+			temp += ". Faction Points spent "
+				"on Trade determine the number of regions in which a faction "
+				"may conduct trade activity. Trade activity includes producing "
+				"goods and materials";
+			if (!Globals->BUILD_NO_TRADE) {
+				temp += ", building ships and buildings";
+			}
+			temp += ". ";
+			if (qm_exist) {
+				temp += "Faction points spent on Trade also determine the "
+					"number of quartermaster units a trade faction can have. ";
+			}
+		} else {
+			// Martial replaces both War and Trade: AllowedMartial gives the region limit, and
+			// AllowedQuarterMasters / AllowedTacticians take max(Trade|War, Martial) points.
+			// The per-region counting mirrors Faction::GetActivityCost.
+			temp += " Faction Points, which may be spent on either of the 2 "
+				"Faction Areas, Martial and Magic.  The faction type may "
+				"be changed at the beginning of each turn, so a faction can "
+				"change and adapt to the conditions around it.  Faction Points "
+				"spent on Martial determine the number of regions in which a "
+				"faction can obtain income by taxing or pillaging, or conduct "
+				"trade activity. Trade activity includes producing goods and "
+				"materials";
+			if (!Globals->BUILD_NO_TRADE) {
+				temp += ", building ships and buildings";
+			}
+			temp += ".";
+			if (Globals->FACTION_ACTIVITY == FactionActivityRules::MARTIAL_MERGED) {
+				temp += " Each region counts only once, however many of these "
+					"activities the faction performs there.";
+			} else {
+				temp += " Each kind of activity counts separately, so taxing "
+					"and trading in the same region counts twice.";
+			}
+			temp += " ";
+			if (qm_exist || Globals->TACTICS_NEEDS_WAR) {
+				temp += "Faction points spent on Martial also determine the "
+					"number of ";
+				if (qm_exist) temp += "quartermaster units";
+				if (qm_exist && Globals->TACTICS_NEEDS_WAR) temp += " and ";
+				if (Globals->TACTICS_NEEDS_WAR) {
+					temp += "level 5 tactics leaders (tacticians)";
+				}
+				temp += " a faction can have. ";
+			}
 		}
 		temp += "Faction Points spent on Magic determine the number of mages ";
 		if (app_exist) {
@@ -2432,7 +2472,10 @@ int Game::GenRules(const AString &rules, const AString &css,
 	if (Globals->UPKEEP_MINIMUM_FOOD > 0)
 		temp += "and food ";
 	temp +=	"available. Money ";
-	if (Globals->UPKEEP_MINIMUM_FOOD > 0)
+	// Food sharing (CheckFactionMaintenance(0)) and allied food (CheckAllyMaintenance) run in
+	// AssessMaintenance whenever FOOD_ITEMS_EXIST, not only when a minimum food ration
+	// (UPKEEP_MINIMUM_FOOD) is required -- so gate their mention on FOOD_ITEMS_EXIST.
+	if (Globals->FOOD_ITEMS_EXIST)
 		temp += "and food ";
 	temp += "will be shared automatically between your units "
 		"in the same region, if one is starving and another has more than "
@@ -2448,7 +2491,7 @@ int Game::GenRules(const AString &rules, const AString &css,
 	}
 	temp += "Lastly, if a faction is allied to yours, their units will "
 		"provide surplus cash ";
-	if (Globals->UPKEEP_MINIMUM_FOOD > 0)
+	if (Globals->FOOD_ITEMS_EXIST)
 		temp += "or food ";
 	temp += "to your units for maintenance, as a last resort.";
 	f.Paragraph(temp);
@@ -5150,11 +5193,21 @@ int Game::GenRules(const AString &rules, const AString &css,
 		f.ClassTagText("div", "rule", "");
 		f.LinkRef("faction");
 		f.TagText("h4", "FACTION [type] [points] ...");
-		temp = "Attempt to change your faction's type.  In the order, you "
-			"can specify up to three faction types (WAR, TRADE, and MAGIC) "
-			"and the number of faction points to assign to each type; if "
-			"you are assigning points to only one or two types, you may "
-			"omit the types that will not have any points.";
+		// The accepted type names come from FactionTypes, which depends on FACTION_ACTIVITY
+		// (see the faction intro above); a ruleset using Martial rejects WAR and TRADE.
+		int martial_types = (Globals->FACTION_ACTIVITY != FactionActivityRules::DEFAULT);
+		temp = "Attempt to change your faction's type.  In the order, you ";
+		if (martial_types) {
+			temp += "can specify up to two faction types (MARTIAL and MAGIC) "
+				"and the number of faction points to assign to each type; if "
+				"you are assigning points to only one type, you may omit the "
+				"other.";
+		} else {
+			temp += "can specify up to three faction types (WAR, TRADE, and "
+				"MAGIC) and the number of faction points to assign to each "
+				"type; if you are assigning points to only one or two types, "
+				"you may omit the types that will not have any points.";
+		}
 		f.Paragraph(temp);
 		temp = "Changing the number of faction points assigned to MAGIC may "
 			"be tricky. Increasing the MAGIC points will always succeed, but "
@@ -5163,20 +5216,33 @@ int Game::GenRules(const AString &rules, const AString &css,
 			"leaders allowed by the new number of MAGIC points BEFORE you "
 			"change your point distribution. For example, if you have 3 "
 			"mages (3 points assigned to MAGIC), but want to use one of "
-			"those points for WAR or TRADE (change to MAGIC 2), you must "
+			"those points for ";
+		temp += (martial_types ? "MARTIAL" : "WAR or TRADE");
+		temp += " (change to MAGIC 2), you must "
 			"first get rid of one of your mages by either giving it to "
 			"another faction or ordering it to ";
 		temp += f.Link("#forget", "FORGET") + " all its magic skills. ";
 		temp += "If you have too many mages for the number of points you "
 			"try to assign to MAGIC, the FACTION order will fail.";
 		if (qm_exist) {
-			temp += " Similar problems could occur with TRADE points and "
-				"the number of quartermasters controlled by the faction.";
+			temp += " Similar problems could occur with ";
+			temp += (martial_types ? "MARTIAL" : "TRADE");
+			temp += " points and the number of quartermasters controlled by "
+				"the faction.";
 		}
 		f.Paragraph(temp);
 		f.Paragraph("Examples:");
-		temp = "Assign 2 faction points to WAR, 2 to TRADE, and 1 to MAGIC.";
-		temp2 = "FACTION WAR 2 TRADE 2 MAGIC 1";
+		if (martial_types) {
+			// Same split as the "well rounded faction" example in the faction intro.
+			int martial = (Globals->FACTION_POINTS + 1) / 2;
+			int magic = Globals->FACTION_POINTS / 2;
+			temp = AString("Assign ") + martial + " faction points to MARTIAL "
+				"and " + magic + " to MAGIC.";
+			temp2 = AString("FACTION MARTIAL ") + martial + " MAGIC " + magic;
+		} else {
+			temp = "Assign 2 faction points to WAR, 2 to TRADE, and 1 to MAGIC.";
+			temp2 = "FACTION WAR 2 TRADE 2 MAGIC 1";
+		}
 		f.CommandExample(temp, temp2);
 		temp = "Become a pure magic faction (assign all points to magic).";
 		temp2 = "FACTION MAGIC ";
