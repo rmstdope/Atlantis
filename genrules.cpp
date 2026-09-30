@@ -667,6 +667,22 @@ int Game::GenRules(const AString &rules, const AString &css,
 		// for DEFAULT but Martial/Magic otherwise, and ParseFactionType accepts only the
 		// registered names. Describing War and Trade to a Martial ruleset (as this paragraph
 		// used to) tells players to use areas the FACTION order rejects.
+		// What counts as trade activity, mirroring every ActivityCheck(..., TRADE) call site:
+		// PRODUCE of anything but silver (monthorders.cpp RunUnitProduce / ValidProd -- WORK
+		// and ENTERTAIN produce silver and are exempt), BUILD unless BUILD_NO_TRADE, and
+		// TRANSPORT/DISTRIBUTE unless TRANSPORT_NO_TRADE.
+		AString trade_activity = "producing goods and materials";
+		int build_counts = !Globals->BUILD_NO_TRADE;
+		int transport_counts = qm_exist && !Globals->TRANSPORT_NO_TRADE;
+		if (build_counts) {
+			trade_activity += (transport_counts ? ", " : ", and ");
+			trade_activity += "building ships and buildings";
+		}
+		if (transport_counts) {
+			trade_activity += ", and using the TRANSPORT or DISTRIBUTE orders";
+		}
+		trade_activity += ". Working and entertaining do not count, since "
+			"they only earn silver";
 		if (Globals->FACTION_ACTIVITY == FactionActivityRules::DEFAULT) {
 			temp += " Faction Points, which may be spent on any of the 3 "
 				"Faction Areas, War, Trade, and Magic.  The faction type may "
@@ -680,11 +696,8 @@ int Game::GenRules(const AString &rules, const AString &css,
 			}
 			temp += ". Faction Points spent "
 				"on Trade determine the number of regions in which a faction "
-				"may conduct trade activity. Trade activity includes producing "
-				"goods and materials";
-			if (!Globals->BUILD_NO_TRADE) {
-				temp += ", building ships and buildings";
-			}
+				"may conduct trade activity. Trade activity includes ";
+			temp += trade_activity;
 			temp += ". ";
 			if (qm_exist) {
 				temp += "Faction points spent on Trade also determine the "
@@ -700,11 +713,8 @@ int Game::GenRules(const AString &rules, const AString &css,
 				"change and adapt to the conditions around it.  Faction Points "
 				"spent on Martial determine the number of regions in which a "
 				"faction can obtain income by taxing or pillaging, or conduct "
-				"trade activity. Trade activity includes producing goods and "
-				"materials";
-			if (!Globals->BUILD_NO_TRADE) {
-				temp += ", building ships and buildings";
-			}
+				"trade activity. Trade activity includes ";
+			temp += trade_activity;
 			temp += ".";
 			if (Globals->FACTION_ACTIVITY == FactionActivityRules::MARTIAL_MERGED) {
 				temp += " Each region counts only once, however many of these "
@@ -2566,6 +2576,79 @@ int Game::GenRules(const AString &rules, const AString &css,
 			"maintenance.";
 	};
 	f.Paragraph(temp);
+	// Payment order, mirroring Game::AssessMaintenance (runorders.cpp). Each step there is a
+	// separate pass over every unit in region/object/unit list order (= report order), and each
+	// unit takes all it needs from a source before the next unit is considered. The list below
+	// omits the minimum-food ("hunger") phase that runs first when UPKEEP_MINIMUM_FOOD > 0, so
+	// it is only printed when that is 0 (true for every shipped ruleset); a ruleset that sets it
+	// would need that phase and the food withdrawal added here.
+	if (Globals->UPKEEP_MINIMUM_FOOD == 0) {
+		temp = "";
+		if (Globals->FOOD_ITEMS_EXIST) {
+			// CheckUnitMaintenanceItem / CheckFactionMaintenanceItem: eat = ceil(needed / value),
+			// and the overshoot is simply discarded.
+			temp += "Food is always eaten in whole items. A unit eats enough "
+				"items to cover what it still owes, rounded up, and any value "
+				"beyond that is lost";
+			if (Globals->MAINTENANCE_COST < Globals->UPKEEP_FOOD_VALUE) {
+				temp += AString(": a unit that owes only ") +
+					Globals->MAINTENANCE_COST + " silver still uses up a "
+					"whole item worth " + Globals->UPKEEP_FOOD_VALUE;
+			}
+			temp += ". This means that many small units eat more food than "
+				"one large unit with the same number of men. ";
+		}
+		temp += "Maintenance is paid in the following steps. Each step is "
+			"applied to every unit before the next one starts. Within a "
+			"step, units are handled one at a time in the order they appear "
+			"in the region, as shown in your turn report, and each unit takes "
+			"everything it needs before the next unit gets anything.";
+		f.Paragraph(temp);
+		f.Enclose(1, "ol");
+		if (Globals->FOOD_ITEMS_EXIST) {
+			f.TagText("li", AString("Units that have issued ") +
+				f.Link("#consume", "CONSUME") +
+				" UNIT or CONSUME FACTION use their own food.");
+			f.TagText("li", "Units that have issued CONSUME FACTION use "
+				"food held by your other units in the same region.");
+		}
+		f.TagText("li", "Each unit uses its own silver.");
+		f.TagText("li", "Units use silver held by your other units in the "
+			"same region.");
+		if (Globals->FOOD_ITEMS_EXIST) {
+			f.TagText("li", "All units, whether or not they have issued "
+				"CONSUME, use their own food, and then food held by your "
+				"other units in the same region.");
+		}
+		f.TagText("li", "Units use silver from your unclaimed fund.");
+		temp = "Units use silver";
+		if (Globals->FOOD_ITEMS_EXIST) temp += ", and then food,";
+		temp += " held by units in the same region whose factions have "
+			"declared you Allied.";
+		f.TagText("li", temp);
+		f.TagText("li", "Units that still cannot pay starve, as described "
+			"above.");
+		f.Enclose(0, "ol");
+		if (Globals->FOOD_ITEMS_EXIST) {
+			// Fixed order of the per-item passes in Game::CheckUnitMaintenance and friends.
+			const int food_order[] = { I_FOOD, I_GRAIN, I_LIVESTOCK, I_FISH };
+			std::vector<std::string> names;
+			for (int item : food_order) {
+				if (ItemDefs[item].flags & ItemType::DISABLED) continue;
+				names.push_back(ItemDefs[item].names);
+			}
+			if (names.size() > 1) {
+				temp = "Whenever food is used, the different kinds are "
+					"used in this order: ";
+				for (size_t n = 0; n < names.size(); n++) {
+					if (n > 0) temp += (n == names.size() - 1) ? " and " : ", ";
+					temp += names[n].c_str();
+				}
+				temp += ".";
+				f.Paragraph(temp);
+			}
+		}
+	}
 	f.LinkRef("economy_recruiting");
 	f.TagText("h3", "Recruiting:");
 	temp = "People may be recruited in a region.  The total amount of "
@@ -3603,6 +3686,30 @@ int Game::GenRules(const AString &rules, const AString &css,
 		}
 		temp += "The target unit must be at least FRIENDLY to the unit "
 			"which issues the order.";
+		// CheckTransportOrders measures range with GetPlanarDistance, adding the rng_transport
+		// crossLevelPenalty (10000000 in the base table; no ruleset overrides it) per level
+		// crossed, and GetPlanarDistance returns 10000000 outright for the Nexus. That can only
+		// exceed the range when the range is checked at all: a range of 0 means unlimited and
+		// skips the check. The longest range is NONLOCAL_TRANSPORT plus the quartermaster bonus
+		// (level + 1) / 3, at most 2 for a level 5 quartermaster.
+		{
+			int penalty = 10000000;
+			RangeType *rt = FindRange("rng_transport");
+			if (rt) penalty = rt->crossLevelPenalty;
+			int longest = std::max(Globals->LOCAL_TRANSPORT,
+				Globals->NONLOCAL_TRANSPORT);
+			if (Globals->TRANSPORT & GameDefs::QM_AFFECT_DIST) longest += 2;
+			if (Globals->LOCAL_TRANSPORT > 0 && Globals->NONLOCAL_TRANSPORT > 0 &&
+					penalty > longest) {
+				temp += " Items cannot be transported or distributed to a unit "
+					"on a different level of the world (for example, between "
+					"the surface and the underworld)";
+				if (Globals->NEXUS_EXISTS) {
+					temp += ", nor to or from the Nexus";
+				}
+				temp += "; they have to be moved there some other way.";
+			}
+		}
 
 		f.Paragraph(temp);
 
@@ -3971,11 +4078,43 @@ int Game::GenRules(const AString &rules, const AString &css,
 		"actual Combat skill.  This is the trade off for being able to hit "
 		"from the back line of fighting.";
 	f.Paragraph(temp);
-	temp = "Being inside a building confers a bonus to defense.  This "
-		"bonus is effective against ranged as well as melee weapons.  The "
-		"number of men that a building can protect is equal to its size. "
-		"The size of the various common buildings was listed in the ";
+	temp = "Being inside a building confers a bonus to defense.  ";
+	// Without ADVANCED_FORTS, Soldier::Soldier adds the object's defenceArray to the defence
+	// skill for EVERY attack type (combat, energy, spirit, weather, riding, ranged), so the
+	// bonus applies against magic too. ADVANCED_FORTS (Kingdoms only) uses protection[]
+	// instead, so keep the original wording there.
+	if (Globals->ADVANCED_FORTS) {
+		temp += "This bonus is effective against ranged as well as melee "
+			"weapons.  ";
+	} else {
+		temp += "The size of the bonus depends on the building and on the "
+			"type of attack, and it applies against every kind of attack, "
+			"including ranged weapons and magic; the description of each "
+			"building shows its bonuses.  ";
+	}
+	temp += "The number of men that a building can protect is equal to its "
+		"size. The size of the various common buildings was listed in the ";
 	temp += f.Link("#tablebuildings", "Table of Buildings") + " earlier. ";
+	// Ships protect through the fleet special case in Soldier::Soldier: the ship item's name
+	// is looked up in ObjectDefs (LookupObject ignores the DISABLED flag), and the fleet
+	// protects protect * number-of-that-ship men. Only mention it if an enabled ship does.
+	{
+		int protecting_ships = 0;
+		for (int s = 0; s < NITEMS; s++) {
+			if (ItemDefs[s].flags & ItemType::DISABLED) continue;
+			if (!(ItemDefs[s].type & IT_SHIP)) continue;
+			AString sname = ItemDefs[s].name;
+			int sobj = LookupObject(&sname);
+			if (sobj >= 0 && ObjectDefs[sobj].protect > 0) protecting_ships = 1;
+		}
+		if (protecting_ships) {
+			temp += "Some ships also protect the men aboard in the same way. "
+				"Each such ship protects its own number of men, so a fleet of "
+				"several of them protects that many times as many; the "
+				"description of each ship shows how many men it protects and "
+				"the bonuses it gives. ";
+		}
+	}
 	f.Paragraph(temp);
 	temp = "If there are too many units in a building to all gain "
 		"protection from it, then those units who have been in the building "
@@ -5017,6 +5156,18 @@ int Game::GenRules(const AString &rules, const AString &css,
 			"food items that the faction owns (in the same region as the "
 			"unit) before using silver. CONSUME tells the unit to use "
 			"silver before food items (this is the default).";
+		// AssessMaintenance: CONSUME UNIT/FACTION units eat their own food first
+		// (CheckUnitMaintenance(1)), then CONSUME FACTION units eat from ANY other unit of the
+		// faction in the region (CheckFactionMaintenance(1) does not check the donor's flags).
+		// Unflagged units still eat food after the silver steps (CheckUnitMaintenance(0)).
+		temp += " Note that the food of a unit is not reserved for that unit "
+			"unless it has issued CONSUME UNIT or CONSUME FACTION itself: "
+			"units in the same region with CONSUME FACTION may eat any food "
+			"it holds before any silver is used. Units that have not issued "
+			"CONSUME still eat food once the available silver has run out. "
+			"See the section on ";
+		temp += f.Link("#economy_maintenance", "maintenance costs") +
+			" for the full order in which maintenance is paid.";
 		f.Paragraph(temp);
 		f.Paragraph("Example:");
 		temp = "Tell a unit to use food items in the unit's possession for "
@@ -5222,7 +5373,12 @@ int Game::GenRules(const AString &rules, const AString &css,
 			"first get rid of one of your mages by either giving it to "
 			"another faction or ordering it to ";
 		temp += f.Link("#forget", "FORGET") + " all its magic skills. ";
-		temp += "If you have too many mages for the number of points you "
+		temp += "If you have too many mages";
+		// ProcessFactionOrder also rolls back when CountApprentices exceeds the new limit.
+		if (app_exist) {
+			temp += AString(" or ") + Globals->APPRENTICE_NAME + "s";
+		}
+		temp += " for the number of points you "
 			"try to assign to MAGIC, the FACTION order will fail.";
 		if (qm_exist) {
 			temp += " Similar problems could occur with ";
@@ -5230,6 +5386,17 @@ int Game::GenRules(const AString &rules, const AString &css,
 			temp += " points and the number of quartermasters controlled by "
 				"the faction.";
 		}
+		f.Paragraph(temp);
+		// ProcessFactionOrder applies the new type immediately while the orders file is being
+		// read (before any order runs), rolls back to the type from just before that order on
+		// failure, and nothing reads Faction::lastchange -- so there is no cooldown.
+		temp = "The FACTION order takes effect as soon as your orders are "
+			"read, before any other order is carried out, so all of this "
+			"turn's limits already use the new faction type. If you issue "
+			"more than one FACTION order, the last one that succeeds is the "
+			"one that counts; one that fails leaves the faction type as it "
+			"was before that order. There is no limit on how often you may "
+			"change your faction type.";
 		f.Paragraph(temp);
 		f.Paragraph("Examples:");
 		if (martial_types) {
