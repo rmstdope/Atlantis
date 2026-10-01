@@ -3750,6 +3750,18 @@ int Game::GenRules(const AString &rules, const AString &css,
 		"character with the appropriate skill and level; higher skill "
 		"levels allow work to proceed faster (still using one unit of "
 		"the required resource per unit of work done). ";
+	// Game::Run1BuildOrder: work = men * level, capped by the materials (own and SHARE-ing
+	// units) and by the work still needed; wood-or-stone uses stone first. New buildings
+	// get the first free number 1-99; with none left, "BUILD: The region is full."
+	temp += "In a month a unit does as many units of work as its number of "
+		"men times its skill level, limited by the materials it has and by "
+		"the work that is still needed. ";
+	if (!(ItemDefs[I_WOOD].flags & ItemType::DISABLED) &&
+			!(ItemDefs[I_STONE].flags & ItemType::DISABLED)) {
+		temp += "A structure that can be built of wood or stone uses stone "
+			"first. ";
+	}
+	temp += "A region can hold at most 99 structures. ";
 	if (Globals->FACTION_LIMIT_TYPE == GameDefs::FACLIM_FACTION_TYPES) {
 		if (Globals->BUILD_NO_TRADE) {
 			temp += "Any faction can issue ";
@@ -3817,7 +3829,9 @@ int Game::GenRules(const AString &rules, const AString &css,
 	}
 	f.Enclose(0, "table");
 	f.Enclose(0, "center");
-	temp = "Size is the number of people that the building can shelter. Cost "
+	// Battle: only the first <protect> men inside get the bonus; ENTER has no capacity check.
+	temp = "Size is the number of men inside the building who get its "
+		"defensive bonus in combat; any number of units may enter it. Cost "
 		"is both the number of man-months of labor and the number of units "
 		"of material required to complete the building.  ";
 	if (Globals->LIMITED_MAGES_PER_BUILDING) {
@@ -3838,9 +3852,25 @@ int Game::GenRules(const AString &rules, const AString &css,
 	temp += ".  To construct these structures requires a high skill level in "
 		"the production skill related to the item that the structure will "
 		"help produce. ";
-	if (!(ObjectDefs[O_INN].flags & ObjectType::DISABLED)) {
-		temp += "(Inns are an exception to this rule, requiring the Building "
-			"skill, not the Entertainment skill.) ";
+	{
+		// Production structures built with the Building skill instead of the skill of what they
+		// aid (Inn, Temple in NewOrigins). Listed from the table so none is forgotten.
+		std::vector<std::string> bld;
+		for (int o = 0; o < NOBJECTS; o++) {
+			if (ObjectDefs[o].flags & ObjectType::DISABLED) continue;
+			if (ObjectDefs[o].protect || ObjectIsShip(o)) continue;
+			if (ObjectDefs[o].productionAided == -1) continue;
+			AString sk = ObjectDefs[o].skill ? ObjectDefs[o].skill : "";
+			if (LookupSkill(&sk) != S_BUILDING) continue;
+			std::string name = ObjectDefs[o].name;
+			bld.push_back(name + "s");
+		}
+		if (!bld.empty()) {
+			temp += "(";
+			temp += joinList(bld).c_str();
+			temp += bld.size() == 1 ? " are an exception" : " are exceptions";
+			temp += " to this rule, requiring the Building skill.) ";
+		}
 	}
 	temp += "This bonus in production is available to any unit in the "
 		"region; there is no need to be inside the structure.";
@@ -3990,14 +4020,15 @@ int Game::GenRules(const AString &rules, const AString &css,
 	if (!(ObjectDefs[O_ROADN].flags & ObjectType::DISABLED)) {
 		f.LinkRef("economy_roads");
 		f.TagText("h3", "Roads:");
-		temp = "There is a another type of structure called roads.  They do "
+		temp = "There is another type of structure called roads.  They do "
 			"not protect units, nor aid in the production of resources, but "
 			"do aid movement, and can improve the economy of a hex.";
 		f.Paragraph(temp);
 		temp = "Roads are directional and are only considered to reach from "
 			"one hexside to the center of the hex.  To gain a movement "
 			"bonus, there must be two connecting roads, one in each "
-			"adjacent hex.  Only one road may be built in each direction. "
+			"adjacent hex.  Building more than one road in the same direction "
+		"gives no additional benefit. "
 			"If a road in the given direction is connected, units move "
 			"along that road at half cost to a minimum of 1 movement point.";
 		f.Paragraph(temp);
@@ -4100,6 +4131,9 @@ int Game::GenRules(const AString &rules, const AString &css,
 			if (ObjectDefs[i].flags & ObjectType::DISABLED) continue;
 			if (ObjectDefs[i].productionAided != -1) continue;
 			if (ObjectDefs[i].protect) continue;
+			// Transport structures (Caravanserai) have no protection or production either;
+			// they are described under Transportation of goods instead.
+			if (ObjectDefs[i].flags & ObjectType::TRANSPORT) continue;
 			if (ObjectIsShip(i)) continue;
 			pS = FindSkill(ObjectDefs[i].skill);
 			if (pS == NULL) continue;
@@ -4160,7 +4194,13 @@ int Game::GenRules(const AString &rules, const AString &css,
 			"not stone. "
 			"Secondly, their construction tends to depend on the "
 			"Shipbuilding skill, not the Building skill. "
-			"Thirdly, while unfinished buildings appear in the "
+			"Thirdly, ships can only be built in a land region next to "
+			"the ocean";
+		// BUILD (parseorders.cpp): no building in an ocean region at all; ships need
+		// IsCoastalOrLakeside (flying ships excepted, see Sailing).
+		if (Globals->LAKES > 0) temp += " or a lake";
+		temp += " (nothing at all can be built in an ocean region). "
+			"Fourthly, while unfinished buildings appear in the "
 			"region, and may be entered by other units, "
 			"unfinished ships appear only in their builder's "
 			"inventory until they are complete.  If the builder ";
@@ -4193,6 +4233,7 @@ int Game::GenRules(const AString &rules, const AString &css,
 		f.Enclose(1, "tr");
 		f.TagText("td", "Class");
 		f.TagText("th", "Capacity");
+		f.TagText("th", "Speed");
 		f.TagText("th", "Cost");
 		f.TagText("th", "Sailors");
 		f.TagText("th", "Skill");
@@ -4218,7 +4259,10 @@ int Game::GenRules(const AString &rules, const AString &css,
 			f.PutStr(ItemDefs[i].name);
 			f.Enclose(0, "td");
 			f.Enclose(1, "td align=\"center\"");
-			f.PutStr(ItemDefs[i].swim);
+			f.PutStr(ItemDefs[i].fly > 0 ? ItemDefs[i].fly : ItemDefs[i].swim);
+			f.Enclose(0, "td");
+			f.Enclose(1, "td align=\"center\"");
+			f.PutStr(ItemDefs[i].speed);
 			f.Enclose(0, "td");
 			f.Enclose(1, "td align=\"center\"");
 			f.PutStr(ItemDefs[i].pMonths);
@@ -4247,6 +4291,9 @@ int Game::GenRules(const AString &rules, const AString &css,
 			f.PutStr(ObjectDefs[i].capacity);
 			f.Enclose(0, "td");
 			f.Enclose(1, "td align=\"center\"");
+			f.PutStr(ItemDefs[ObjectDefs[i].item].speed);
+			f.Enclose(0, "td");
+			f.Enclose(1, "td align=\"center\"");
 			f.PutStr(ObjectDefs[i].cost);
 			f.Enclose(0, "td");
 			f.Enclose(1, "td align=\"center\"");
@@ -4269,12 +4316,25 @@ int Game::GenRules(const AString &rules, const AString &css,
 			"are the number of skill levels of the Sailing skill "
 			"that must be aboard the ship (and issuing the ";
 		temp += f.Link("#sail", "SAIL") + " order) in order for the ship "
-			"to sail.";
+			"to sail. The speed is the number of movement points the ship "
+			"gets per month, and the skill is the level of Shipbuilding "
+			"needed to build it.";
 		f.Paragraph(temp);
-		temp = "When a ship is built, if its builder is already the "
-			"owner of a fleet object, then the ship will be "
-			"added to that fleet; otherwise a new fleet will be "
-			"created to hold the ship.  A fleet has the combined "
+		// Game::CreateShip: joins the fleet the builder is inside if both fly or both sail;
+		// otherwise a new fleet is made and the builder moved into it (leaving any building).
+		temp = "When a ship is finished, if its builder is inside a fleet, "
+			"the ship is added to that fleet";
+		{
+			int fly = 0;
+			for (int it = 0; it < NITEMS; it++) {
+				if (ItemDefs[it].flags & ItemType::DISABLED) continue;
+				if ((ItemDefs[it].type & IT_SHIP) && ItemDefs[it].fly > 0) fly = 1;
+			}
+			if (fly) temp += " (flying and sailing ships cannot be mixed in a fleet)";
+		}
+		temp += "; otherwise a new fleet is created to hold the ship, and the "
+			"builder moves into it, leaving any building it was in.  A fleet "
+			"has the combined "
 			"capacity and sailor requirement of its constituent "
 			"vessels, and moves at the speed of its slowest ship. ";
 		f.Paragraph(temp);
@@ -4295,11 +4355,15 @@ int Game::GenRules(const AString &rules, const AString &css,
 		"spends the month performing manual work for wages. The amount to "
 		"be earned from this is usually not very high, so it is generally "
 		"a last resort to be used if one is running out of money. The "
-		"current wages are shown in the region description for each region. "
-		"All units may ";
+		"current wages are shown in the region description for each region, "
+		"for example \"Wages: $15.0 (Max: $500)\": each working man earns "
+		"the wage, but the region pays out at most the Max in total each "
+		"month; if more work is done than that, the Max is shared out in "
+		"proportion to how much each unit worked. All units may ";
 	temp += f.Link("#work", "WORK") + ", regardless of skills";
 	if (Globals->FACTION_LIMIT_TYPE == GameDefs::FACLIM_FACTION_TYPES)
-		temp += " or faction type";
+		temp += " or faction type, and working does not count toward any "
+			"faction limit";
 	temp += ".";
 	if (Globals->DEFAULT_WORK_ORDER) {
 		temp += " A unit that is not given any month long order works "
@@ -4534,6 +4598,14 @@ int Game::GenRules(const AString &rules, const AString &css,
 			temp += "Illusory ";
 		temp += "creatures will assist in taxation. ";
 	}
+	// Unit::Taxers: a unit qualifying through a skill (or as a mage) taxes with every man;
+	// otherwise only as many men as it has qualifying items (weapons, mounts, ...).
+	if (!(Globals->WHO_CAN_TAX & GameDefs::TAX_ANYONE)) {
+		temp += "If a unit can tax because of a skill, every man in it taxes; "
+			"if it can only tax because of its equipment, only as many men "
+			"tax as it has suitable items, so 10 men with 4 swords tax as 4 "
+			"men. ";
+	}
 	temp +=	"Each taxing character can collect $";
 	temp += AString(Globals->TAX_BASE_INCOME) + ", though if the number of "
 		"taxers would tax more than the available tax income, the tax "
@@ -4543,15 +4615,20 @@ int Game::GenRules(const AString &rules, const AString &css,
 		temp = capitalized(tax_factions) + " ";
 	else
 		temp = "Factions ";
-	temp += "may also pillage a region. To do this requires the faction to "
-		"have enough combat ready men in the region to tax half of the "
-		"available money in the region. The total amount of money that can "
-		"be pillaged will then be shared out between every combat ready "
-		"unit that issues the ";
+	// Game::RunPillageOrders: all pillaging units in the region, of every faction, count
+	// toward the threshold (pillagers * 2 * TAX_BASE_INCOME >= wealth). ARegion::Pillage
+	// sets wealth to 0, removes a third of the development, and kills some people.
+	temp += "may also pillage a region. To do this requires enough combat "
+		"ready men pillaging in the region (counting the pillagers of all "
+		"factions together) to tax half of the available money in the "
+		"region. The total amount of money that can be pillaged will then "
+		"be shared out between every combat ready unit that issues the ";
 	temp += f.Link("#pillage", "PILLAGE") + " order. The amount of money "
 		"collected is equal to twice the available tax money. However, the "
-		"economy of the region will be seriously damaged by pillaging, and "
-		"will only slowly recover over time.  Note that ";
+		"economy of the region will be seriously damaged by pillaging: "
+		"no tax money is left that month, the region loses a third of its "
+		"development, some of its people are killed, and it will only "
+		"slowly recover over time.  Note that ";
 	temp += f.Link("#pillage", "PILLAGE") + " comes before " +
 		f.Link("#tax", "TAX") + ", so a unit performing " +
 		f.Link("#tax", "TAX") + " will collect no money in that region that "
@@ -4607,27 +4684,38 @@ int Game::GenRules(const AString &rules, const AString &css,
 				"skill possessed by the quartermaster unit.";
 		}
 		f.Paragraph(temp);
-		temp = "In order to accomplish this function, a quartermaster "
-			"must be the owner of a structure which allows transportation "
-			"of items.  The structures which allow this are: ";
-		last = -1;
-		comma = 0;
-		j = 0;
-		for (i = 0; i < NOBJECTS; i++) {
-			if (!(ObjectDefs[i].flags & ObjectType::TRANSPORT)) continue;
-			j++;
-			if (last == -1) {
-				last = i;
-				continue;
+		// CheckTransportOrders: within LOCAL_TRANSPORT anyone may TRANSPORT to a quartermaster
+		// for free; DISTRIBUTE and longer TRANSPORT need a quartermaster owning a COMPLETED
+		// TRANSPORT structure. Those structures used to be listed under Roads (no protection, no
+		// production); they are now described here with what they cost to build.
+		temp = AString("Transport within ") + Globals->LOCAL_TRANSPORT + " hex";
+		if (Globals->LOCAL_TRANSPORT != 1) temp += "es";
+		temp += " is free. To ";
+		temp += f.Link("#distribute", "DISTRIBUTE") + " items, or to ";
+		temp += f.Link("#transport", "TRANSPORT") + " them further, a "
+			"quartermaster must be the owner of a completed structure which "
+			"allows transportation of items. ";
+		{
+			std::vector<std::string> structs;
+			for (i = 0; i < NOBJECTS; i++) {
+				if (ObjectDefs[i].flags & ObjectType::DISABLED) continue;
+				if (!(ObjectDefs[i].flags & ObjectType::TRANSPORT)) continue;
+				std::string d = ObjectDefs[i].name;
+				pS = FindSkill(ObjectDefs[i].skill);
+				int it = ObjectDefs[i].item;
+				if (pS && it != -1) {
+					d += " (" + std::to_string(ObjectDefs[i].cost) + " ";
+					d += it == I_WOOD_OR_STONE ? "wood or stone" : ItemDefs[it].name;
+					d += std::string(", ") + pS->name + " " +
+						std::to_string(ObjectDefs[i].level) + ")";
+				}
+				structs.push_back(d);
 			}
-			temp += ObjectDefs[i].name;
-			temp += ", ";
-			comma++;
-			last = i;
+			temp += structs.size() == 1 ? "This structure is the " :
+				"The structures which allow this are the ";
+			temp += joinList(structs).c_str();
+			temp += ".";
 		}
-		if (comma) temp += "and ";
-		temp += ObjectDefs[last].name;
-		temp += ".";
 		f.Paragraph(temp);
 
 		if (Globals->SHIPPING_COST > 0) {
@@ -4641,6 +4729,40 @@ int Game::GenRules(const AString &rules, const AString &css,
 					"above when the unit is at the maximum skill level.";
 			}
 			f.Paragraph(temp);
+		}
+		// Cost per weight = SHIPPING_COST * (4 - (level+1)/2) with QM_AFFECT_COST; range =
+		// NONLOCAL_TRANSPORT + (level+1)/3 with QM_AFFECT_DIST (both runorders.cpp).
+		if ((Globals->TRANSPORT & (GameDefs::QM_AFFECT_COST | GameDefs::QM_AFFECT_DIST)) &&
+				Globals->NONLOCAL_TRANSPORT > 0) {
+			f.Paragraph("Transport to another quartermaster, by the skill of the "
+				"quartermaster sending it:");
+			f.Enclose(1, "center");
+			f.Enclose(1, "table border=\"1\"");
+			f.Enclose(1, "tr");
+			f.TagText("th", "Quartermaster level");
+			f.TagText("th", "Range (hexes)");
+			if (Globals->SHIPPING_COST > 0) f.TagText("th", "Cost per weight unit");
+			f.Enclose(0, "tr");
+			for (int lvl = 1; lvl <= 5; lvl++) {
+				int range = Globals->NONLOCAL_TRANSPORT;
+				if (Globals->TRANSPORT & GameDefs::QM_AFFECT_DIST) range += (lvl + 1) / 3;
+				int cost = Globals->SHIPPING_COST;
+				if (Globals->TRANSPORT & GameDefs::QM_AFFECT_COST) cost *= 4 - (lvl + 1) / 2;
+				// TagText would close with "</td align=...>", so open and close by hand.
+				AString cells[] = { AString(lvl), AString(range), AString("$") + cost };
+				int ncells = Globals->SHIPPING_COST > 0 ? 3 : 2;
+				f.Enclose(1, "tr");
+				for (int c = 0; c < ncells; c++) {
+					f.Enclose(1, "td align=\"center\"");
+					f.PutStr(cells[c]);
+					f.Enclose(0, "td");
+				}
+				f.Enclose(0, "tr");
+			}
+			f.Enclose(0, "table");
+			f.Enclose(0, "center");
+		}
+		{
 		}
 
 		temp = "Quartermasters must be single man units";
