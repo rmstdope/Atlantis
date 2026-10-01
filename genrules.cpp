@@ -4990,8 +4990,11 @@ int Game::GenRules(const AString &rules, const AString &css,
 		else
 			temp += "The";
 		if (has_stea) {
-			temp += " attacking unit must be able to see the unit that it "
-				"wishes to attack. More information is available on this "
+			// Unit::CanSee / CanCatch delegate to the faction: any unit of the attacker's
+			// faction in the region with enough Observation / Riding is enough.
+			temp += " attacking faction must be able to see the unit that it "
+				"wishes to attack: it is enough that any of its units in the "
+				"region can see it. More information is available on this "
 				"in the stealth section of the rules.";
 		}
 		if (!(SkillDefs[S_RIDING].flags & SkillType::DISABLED)) {
@@ -4999,8 +5002,9 @@ int Game::GenRules(const AString &rules, const AString &css,
 				f.Paragraph(temp);
 				temp = "Secondly, the";
 			}
-			temp += " attacking unit must be able to catch the unit it "
-				"wishes to attack.  A unit may only catch a unit if its "
+			temp += " attacking faction must be able to catch the unit it "
+				"wishes to attack (again, any of its units in the region "
+				"will do).  A unit may only catch a unit if its "
 				"effective Riding skill is greater than or equal to the "
 				"target unit's effective Riding skill; otherwise, the "
 				"target unit just rides away from the attacking unit.  "
@@ -5019,7 +5023,9 @@ int Game::GenRules(const AString &rules, const AString &css,
 				"form of speedier transportation). Also, note that for a "
 				"unit to be able to use its defensive Riding ability to "
 				"avoid attack, the unit cannot be in a building, fleet, or "
-				"structure of any type.";
+				"structure of any type, and it cannot be on guard. A unit's "
+				"defensive Riding is also limited by the weakest of its "
+				"mounts.";
 		}
 	}
 	f.Paragraph(temp);
@@ -5036,9 +5042,10 @@ int Game::GenRules(const AString &rules, const AString &css,
 		f.Link("#move", "MOVE") + " to enter a region, will attack any "
 		"units that attempt to deny it access.  If the advancing unit loses "
 		"the battle, it will be forced to retreat to the previous region it "
-		"moved through.  If the unit wins the battle and its army doesn't "
-		"lose any men, it is allowed to continue to move, provided that it "
-		"has enough movement points.";
+		"moved through.  If the unit wins the battle, it is allowed to "
+		"continue to move, provided that it has enough movement points and "
+		"its side did not suffer losses that stop it (see ";
+	temp += f.Link("#com_victory", "Victory!") + ").";
 	f.Paragraph(temp);
 	if (has_stea || !(SkillDefs[S_RIDING].flags & SkillType::DISABLED)) {
 		temp = "Note that ";
@@ -5078,13 +5085,21 @@ int Game::GenRules(const AString &rules, const AString &css,
 		"factions attack one, then all their armies join together to attack "
 		"at the same time (even if they are enemies and will later fight "
 		"each other).";
+	// Game::GetAFacs: also joins (without an order) any unit not set to avoid combat whose
+	// faction is Hostile to the target, and any unit on ADVANCE that is not allied to it.
+	temp += " Units of other factions in the region also join the attack "
+		"without being ordered to, if they do not have Avoid Combat set and "
+		"their faction has declared the target Hostile, or if they are using ";
+	temp += f.Link("#advance", "ADVANCE") + " and are not allied with the "
+		"target.";
 	f.Paragraph(temp);
-	temp = "On the defending side are all identifiable units belonging to "
-		"the defending faction.  If a unit has Avoid Combat set and it "
-		"belongs to the target faction, it will be uninvolved only if its "
-		"faction cannot be identified by the attacking faction.  A unit "
-		"which was explicitly attacked will be involved anyway, regardless "
-		"of Avoid Combat. ";
+	// Game::GetDFacs / GetSides: every non-avoiding unit of the defending faction joins,
+	// identified or not; an avoiding one only if attacked or both identified and caught.
+	temp = "On the defending side are all units belonging to the defending "
+		"faction that do not have Avoid Combat set.  A unit of the target "
+		"faction with Avoid Combat set stays out of the battle, unless it "
+		"was the unit attacked, or the attackers can both identify its "
+		"faction and catch it. ";
 	if (has_stea) {
 		temp += "(This means that Avoid Combat is mostly useful for high "
 			"stealth scouts.) ";
@@ -5110,8 +5125,16 @@ int Game::GenRules(const AString &rules, const AString &css,
 	temp += f.Link("#hold", "HOLD") + " order) will not join battles in "
 		"adjacent regions.  This flag applies to both attacking and "
 		"defending factions.  A unit with the Noaid flag (set using the ";
+	// Battle.cpp: adjacent help is cut off only if every unit of that side in the battle
+	// region is NOAID. EXTENDED_FORT_DEFENCE: helpers keep their own building's protection.
 	temp += f.Link("#noaid", "NOAID") + " order) will receive no aid from "
-		"adjacent hexes when attacked, or when it issues an attack.";
+		"adjacent hexes when attacked, or when it issues an attack; but "
+		"help from adjacent hexes is only refused if every unit of that "
+		"side in the battle region has the Noaid flag.";
+	if (Globals->EXTENDED_FORT_DEFENCE) {
+		temp += " Units that join from an adjacent region keep the "
+			"protection of the building they are in.";
+	}
 	f.Paragraph(temp);
 	temp = "Example:  A fight starts in region A, in the initial combat "
 		"phase (before any movement has occurred).  The defender has a unit "
@@ -5151,15 +5174,17 @@ int Game::GenRules(const AString &rules, const AString &css,
 	f.TagText("h3", "The Battle:");
 	temp = "The troops having lined up, the fight begins.";
 	if (!(SkillDefs[S_TACTICS].flags & SkillType::DISABLED)) {
-		temp += " The computer selects the best tactician from each side; "
-			"that unit is regarded as the leader of its side.  If two or "
-			"more units on one side have the same Tactics skill, then the "
-			"one with the lower unit number is regarded as the leader of "
-			"that side.  If one side's leader has a better Tactics skill "
-			"than the other side's,";
-		
+		// Army::Army takes the highest Tactics of any unit on each side. With ADVANCED_TACTICS
+		// (Battle::Run) the better side gets the difference, capped at 3, as a bonus that only
+		// lasts the first round and only for physical attacks (Army::Reset clears it).
+		temp += " Each side uses the highest Tactics skill of any of its "
+			"units.  If one side's Tactics skill is better than the other "
+			"side's, ";
 		if (Globals->ADVANCED_TACTICS) {
-			temp += "then that side gets a tactics difference bonus to their attack and defense.";
+			temp += "then that side gets a bonus equal to the difference (at "
+				"most +3) to the attack and defense skills of its soldiers in "
+				"the first round of the battle. The bonus applies to melee, "
+				"riding and ranged attacks, but not to spells.";
 		} else {
 			temp += "then that side gets a free round of attacks.";
 		}
@@ -5173,8 +5198,10 @@ int Game::GenRules(const AString &rules, const AString &css,
 	}
 	temp += "Each combatant will attempt to hit a randomly selected enemy. "
 		"If he hits, and the target has no armor, then the target is "
-		"automatically killed.  Armor may provide extra defense against "
-		"otherwise successful attacks.";
+		"automatically killed (creatures with several hit points lose one "
+		"hit point instead).  Armor may provide extra defense against "
+		"otherwise successful attacks, and some magic items can protect "
+		"their wearer completely.";
 	f.Paragraph(temp);
 	temp = "The basic skill used in battle is the Combat skill; this is "
 		"used for hand to hand fighting.  If one soldier tries to hit "
@@ -5241,10 +5268,13 @@ int Game::GenRules(const AString &rules, const AString &css,
 		"Different types of armor may give different survival chances "
 		"against a successful attack of different types.";
 	f.Paragraph(temp);
-	temp = "A soldier attacking with a ranged weapon will generally be "
-		"treated as if they have a Combat skill of 0, even if they have an "
-		"actual Combat skill.  This is the trade off for being able to hit "
-		"from the back line of fighting.";
+	// Unit::GetWeapon: NOATTACKERSKILL (ranged) weapons attack with their own skill (e.g.
+	// Longbow) plus the weapon bonus, and defend with the weapon's defense bonus only.
+	temp = "A soldier using a ranged weapon attacks with his skill in that "
+		"weapon (for example Longbow) rather than Combat, but defends as if "
+		"he had a Combat skill of 0, even if he has an actual Combat skill. "
+		"This is the trade off for being able to hit from the back line of "
+		"fighting.";
 	f.Paragraph(temp);
 	temp = "Being inside a building confers a bonus to defense.  ";
 	// Without ADVANCED_FORTS, Soldier::Soldier adds the object's defenceArray to the defence
@@ -5303,34 +5333,72 @@ int Game::GenRules(const AString &rules, const AString &css,
 		"been wiped out.  On the other hand, neither can they attack with "
 		"melee weapons, but only with ranged weapons or magic.  Once all "
 		"front-line units have been wiped out, then the Behind flag no "
-		"longer has any effect.";
+		"longer has any effect.  Only the men in a unit stay behind; "
+		"monsters in a unit with the Behind flag fight in the front line.";
 	f.Paragraph(temp);
 	f.LinkRef("com_victory");
 	f.TagText("h3", "Victory!");
-	temp = "Combat rounds continue until one side has accrued 50% losses "
-		"(or more). The victorious side is then awarded one free round of "
-		"attacks, after which the battle is over.  If both sides have "
-		"more than 50% losses, the battle is a draw, and neither side gets "
-		"a free round.";
+	// Army::Broken: more than half the soldiers dead (strictly). Battle::Run: both broken in
+	// the same round is a draw unless one side is wiped out; 100 rounds max, then a draw.
+	temp = "Combat rounds continue until one side has lost more than half "
+		"of its soldiers. The victorious side is then awarded one free round "
+		"of attacks, after which the battle is over.  If both sides pass "
+		"that point in the same round, the battle is a draw (unless one "
+		"side has been wiped out), and neither side gets a free round. A "
+		"battle that is still going on after 100 rounds also ends in a "
+		"draw.";
 	f.Paragraph(temp);
 	/* XXX -- Here is where to put the ROUT information */
 	if (!(SkillDefs[S_HEALING].flags & SkillType::DISABLED) &&
 			!(ItemDefs[I_HERBS].flags & SkillType::DISABLED)) {
+		// Army::DoHeal / DoHealLevel: HealDefs[level] = {attempts multiplier, % chance};
+		// attempts per man = num * HEALS_PER_MAN. Best healers go first; healing potions
+		// (level 6 entry) and Magical Healing (MagicHealDefs) also heal after battle.
+		int attempts = HealDefs[1].num * Globals->HEALS_PER_MAN;
+		int same = 1;
+		for (int l = 2; l <= 5; l++)
+			if (HealDefs[l].num != HealDefs[1].num) same = 0;
 		temp = "Units with the Healing skill have a chance of being able "
 			"to heal casualties of the winning side, so that they recover "
-			"rather than dying.  Each character with this skill can attempt "
-			"to heal ";
-		temp += Globals->HEALS_PER_MAN;
-		temp += " casualties per skill level. Each attempt however "
-			"requires one unit of Herbs, which is thereby used up. Each "
-			"attempt has a some chance of healing one casualty; only one "
-			"attempt at Healing may be made per casualty. Healing occurs "
-			"automatically, after the battle is over, by any living "
-			"healers on the winning side.";
+			"rather than dying.  ";
+		if (same) {
+			temp += AString("Each man with this skill can attempt to heal ") +
+				attempts + " casualties, whatever his skill level";
+		} else {
+			temp += AString("Each man with this skill can attempt to heal ") +
+				attempts + " casualties per skill level";
+		}
+		temp += AString("; a higher level improves the chance of success, "
+			"which is ") + HealDefs[1].rate + "% at level 1";
+		for (int l = 2; l <= 5; l++) {
+			temp += (l == 5) ? AString(" and ") : AString(", ");
+			temp += AString(HealDefs[l].rate) + "% at level " + l;
+		}
+		temp += ". Each attempt however requires one unit of Herbs, which "
+			"is thereby used up. Only one attempt at Healing may be made per "
+			"casualty, and the best healers try first. Healing occurs "
+			"automatically, after the battle is over, by any living healers "
+			"on the winning side.";
+		if (!(ItemDefs[I_HEALPOTION].flags & ItemType::DISABLED)) {
+			temp += AString(" Healing potions also heal casualties after a battle, "
+				"with a ") + HealDefs[6].rate + "% chance each, without "
+				"needing herbs.";
+		}
+		if (!(SkillDefs[S_MAGICAL_HEALING].flags & SkillType::DISABLED)) {
+			temp += " Mages with Magical Healing also heal casualties after a "
+				"battle, without herbs (see the skill description).";
+		}
 		f.Paragraph(temp);
 	}
-	temp = "Any items owned by dead combatants on the losing side have a "
-		"50% chance of being found and collected by the winning side. "
+	// Battle::GetSpoils: each losing unit loses items in proportion to its dead; about half
+	// of those (rounded at random) become spoils, the rest are destroyed; IT_ALWAYS_SPOIL /
+	// IT_NEVER_SPOIL override; dead wild monsters add their own spoils; draws give none.
+	temp = "Each unit on the losing side loses a share of its items equal "
+		"to the share of its men who died. About half of these items are "
+		"found and collected by the winning side, and the rest are "
+		"destroyed (some items are always recovered, and some never are). "
+		"Wild monsters that are killed also leave spoils of their own. A battle "
+		"that ends in a draw gives no spoils. "
 		"Each item which is recovered is picked up by one of the "
 		"survivors able to carry it (see the ";
 	temp += f.Link("#spoils", "SPOILS") + " command) at random, so the "
@@ -5360,7 +5428,18 @@ int Game::GenRules(const AString &rules, const AString &css,
 		"battles are not added together. If a battle ends indecisively, "
 		"every surviving unit on both sides is stopped in the same way, "
 		"regardless of losses. Surviving units on the losing side cannot "
-		"attack again that turn, but they may still move.";
+		"attack again that turn, but they may still move. They are also "
+		"taken off guard";
+	// Soldier::Alive(LOSS): routed = 1, guard cleared unless the unit has an Amulet of
+	// Invulnerability; Game::Do1Attack refuses routed targets with ONLY_ROUT_ONCE.
+	if (!(ItemDefs[I_AMULETOFI].flags & ItemType::DISABLED)) {
+		temp += " (unless they carry an amulet of invulnerability)";
+	}
+	if (Globals->ONLY_ROUT_ONCE) {
+		temp += ", and they cannot be the target of another attack that turn, "
+			"though they may still be drawn into other battles as defenders";
+	}
+	temp += ".";
 	f.Paragraph(temp);
 	if (has_stea || has_obse) {
 		f.LinkRef("stealthobs");
