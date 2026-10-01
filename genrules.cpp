@@ -2413,11 +2413,21 @@ int Game::GenRules(const AString &rules, const AString &css,
 			"the race of the studying unit (remembering that for units "
 			"containing more than one race, the maximum is determined by "
 			"the least common denominator).  Every race has a normal "
-			"maximum skill level, and  a list of skills that they "
+			"maximum skill level, and a list of skills that they "
 			"specialize in, and can learn up to higher level. ";
-		if (Globals->LEADERS_EXIST) {
-			temp += "Leaders, being more powerful, can learn skills to "
-				"even higher levels. ";
+		// The table below shows that most races already reach the leaders' level in their
+		// specialized skills, so the real difference is the non-specialized maximum and magic
+		// (Game::DoStudyOrder: "Only leaders may study magic" unless MAGE_NONLEADERS).
+		ManType *lt = Globals->LEADERS_EXIST ? FindRace("LEAD") : NULL;
+		if (lt) {
+			temp += AString("Leaders can learn every skill up to level ") +
+				lt->defaultlevel;
+			if (!Globals->MAGE_NONLEADERS) temp += ", and only leaders can study magic";
+			temp += ". ";
+		}
+		if (!Globals->SKILL_LIMIT_NONLEADERS) {
+			// With SKILL_LIMIT_NONLEADERS off there is no limit on the number of skills.
+			temp += "A unit, leader or not, may know any number of skills. ";
 		}
 		temp += "Here is a list of the races (including leaders) and the "
 			"information on normal skill levels and specialized skills.";
@@ -2427,7 +2437,7 @@ int Game::GenRules(const AString &rules, const AString &css,
 		f.Enclose(1, "table border=\"1\"");
 		f.Enclose(1, "tr");
 		f.TagText("th", "Race/Type");
-		f.TagText("th", "Specilized Skills");
+		f.TagText("th", "Specialized Skills");
 		f.TagText("th", "Max Level (specialized skills)");
 		f.TagText("th", "Max Level (non-specialized skills)");
 		f.Enclose(0, "tr");
@@ -2764,7 +2774,17 @@ int Game::GenRules(const AString &rules, const AString &css,
 		"do not need to be consecutive; for a unit to go from level 1 to "
 		"level 2, he can study for a month, do something else for a month, "
 		"and then go back and complete the rest of his studies.";
+	// DoStudyOrder: a target level keeps the STUDY order going until reached, and is lowered
+	// to the unit's maximum (with a message) if it is higher.
+	temp += " A unit can also be given a level to study to, for example ";
+	temp += f.Link("#study", "STUDY") + " COMBAT 3; it then keeps studying "
+		"each month until it reaches that level. If the level is higher than "
+		"the unit can reach, it studies up to its maximum instead.";
 	if (Globals->SKILL_PRACTICE_AMOUNT > 0) {
+		// Unit::Practice: SKILL_PRACTICE_AMOUNT days per man (without REQUIRED_EXPERIENCE),
+		// once per month, only with some training already and below the unit's maximum;
+		// a prerequisite at or below the skill's current level gets the practice instead.
+		// Teachers practise the skill they teach (Game::Do1TeachOrder).
 		temp += "  A unit can also increase its level of training by "
 			"using a skill.  This progress is ";
 		if (Globals->SKILL_PRACTICE_AMOUNT < 11)
@@ -2777,44 +2797,64 @@ int Game::GenRules(const AString &rules, const AString &css,
 			temp += "faster than";
 		else
 			temp += "much faster than";
-		temp += " studying.  Only one skill can be improved through "
+		temp += " studying";
+		if (!Globals->REQUIRED_EXPERIENCE) {
+			temp += AString(": each use gives ") + Globals->SKILL_PRACTICE_AMOUNT +
+				" days of training per man";
+		}
+		temp += ".  Only one skill can be improved through "
 			"practice in any month; if multiple skills are used, only the "
 			"first will be improved.  A skill will only improve with "
 			"practice if the unit has first studied the rudiments of the "
-			"skill.";
+			"skill, and not beyond the highest level the unit can reach. "
+			"If the skill needs other skills, and one of those is not "
+			"higher than the skill being used, that skill is improved "
+			"instead. A unit that teaches a skill also practises it.";
 	}
 	f.Paragraph(temp);
-	// XXX -- This is not as nice as it could be and could cause problems
-	// if the skills are given disparate costs.   This should probably be
-	// a table of all skills/costs.
-	temp = "Most skills cost $";
-	temp += SkillDefs[S_COMBAT].cost;
-	temp += " per person per month to study (in addition to normal "
-		"maintenance costs).  The exceptions are ";
-	if (has_stea || has_obse) {
-		if (has_stea) temp += "Stealth";
-		if (has_obse) {
-			if (has_stea) temp += " and ";
-			temp += "Observation";
+	temp = "A unit that no longer wants a skill can use the ";
+	temp += f.Link("#forget", "FORGET") + " order to lose all of its training "
+		"in it.";
+	f.Paragraph(temp);
+	// Study costs, built from the enabled skills so that no exception is missed (Quartermaster
+	// used to be left out). Magic skills are grouped together; any other skill whose cost
+	// differs from Combat's is listed by name. DoStudyOrder charges SkillCost * men, and
+	// refuses the whole order if the unit can't pay for every man.
+	{
+		int base = SkillDefs[S_COMBAT].cost;
+		std::map<int, std::vector<std::string>> byCost;
+		std::map<int, int> magicCosts;
+		for (int sk = 0; sk < NSKILLS; sk++) {
+			if (SkillDefs[sk].flags & SkillType::DISABLED) continue;
+			if (SkillDefs[sk].flags & SkillType::MAGIC) {
+				magicCosts[SkillDefs[sk].cost]++;
+				continue;
+			}
+			if (SkillDefs[sk].cost == base) continue;
+			std::string name = SkillDefs[sk].name;
+			name[0] = toupper(name[0]);
+			byCost[SkillDefs[sk].cost].push_back(name);
 		}
-		temp += " (";
-		if (has_stea && has_obse)
-			temp += "both of which cost $";
-		else
-			temp += "which costs $";
-		temp += SkillDefs[S_STEALTH].cost;
-		temp += "), ";
+		std::vector<std::string> parts;
+		for (auto &kv : byCost) {
+			parts.push_back(joinList(kv.second) + " ($" + std::to_string(kv.first) + ")");
+		}
+		if (magicCosts.size() == 1 && magicCosts.begin()->first != base) {
+			parts.push_back("magic skills ($" +
+				std::to_string(magicCosts.begin()->first) + ")");
+		} else if (magicCosts.size() > 1) {
+			parts.push_back("magic skills (which vary; see each skill's description)");
+		}
+		temp = AString("Most skills cost $") + base + " per person per month to "
+			"study (in addition to normal maintenance costs)";
+		if (!parts.empty()) {
+			temp += ". The exceptions are ";
+			temp += joinList(parts).c_str();
+		}
+		temp += ". The unit must be able to pay for every man in it, or it "
+			"will not study at all.";
+		f.Paragraph(temp);
 	}
-	temp += "Magic skills (which cost $";
-	temp += SkillDefs[S_FORCE].cost;
-	temp += ")";
-	if (!(SkillDefs[S_TACTICS].flags & SkillType::DISABLED)) {
-		temp += ", and Tactics (which costs $";
-		temp += SkillDefs[S_TACTICS].cost;
-		temp += ")";
-	}
-	temp += ".";
-	f.Paragraph(temp);
 	f.LinkRef("skills_teaching");
 	f.TagText("h3", "Teaching:");
 	temp = AString("A unit with a teacher can learn up to twice as fast ") +
@@ -2826,8 +2866,12 @@ int Game::GenRules(const AString &rules, const AString &css,
 		"that counts. Thus, a unit with 1 month of training is effectively "
 		"the same as a unit with 2 months of training, since both have a "
 		"skill level of 1.)  The units being taught simply issue the ";
-	temp += f.Link("#study", "STUDY") + " order normally (also, his faction "
-		"must be declared Friendly by the teaching faction).  Each person "
+	// Do1TeachOrder checks target->faction->GetAttitude(teacher's faction): the STUDENT's
+	// faction must regard the teacher's as Friendly or better (own faction counts as Ally).
+	// The old text had the direction reversed.
+	temp += f.Link("#study", "STUDY") + " order normally (if the student "
+		"belongs to another faction, that faction must have declared the "
+		"teacher's faction Friendly or Ally).  Each person "
 		"can only teach up to " + Globals->STUDENTS_PER_TEACHER +
 		" student" + (Globals->STUDENTS_PER_TEACHER == 1?"":"s") + " in a ";
 	temp += "month; additional students dilute the training.  Thus, if 1 "
@@ -2835,6 +2879,17 @@ int Game::GenRules(const AString &rules, const AString &css,
 	temp += AString(2*Globals->STUDENTS_PER_TEACHER) +
 		" men, each man being taught will gain 1 1/2 months of training, "
 		"not 2 months.";
+	f.Paragraph(temp);
+	// Do1TeachOrder: students are looked up in the teacher's region; levels compared with
+	// GetRealSkill (studied training only); a student's extra days are capped at 30 per man,
+	// so more teachers can't give more than one extra month. The extra days are only used if
+	// the student's own STUDY succeeds.
+	temp = "The teacher and the students must be in the same region. Only "
+		"levels gained by training count for teaching; a level given by an "
+		"item does not. A student can gain at most one extra month of "
+		"training each month, however many teachers it has. If the "
+		"student's study fails (for example because it cannot pay, or is "
+		"already at its maximum level), the teaching is wasted.";
 	f.Paragraph(temp);
 	temp = "Note that it is quite possible for a single unit to teach two "
 		"or more other units different skills in the same month, provided "
@@ -2852,11 +2907,17 @@ int Game::GenRules(const AString &rules, const AString &css,
 	}
 	f.LinkRef("skills_skillreports");
 	f.TagText("h3", "Skill Reports:");
-	temp = "When a faction learns a new skill level for this first time, it "
-		"will be given a report on special abilities that a unit with this "
-		"skill level has. This report can be shown again at any time (once "
-		"a faction knows the skill), using the ";
-	temp += f.Link("#show", "SHOW") + " order. For example, when a faction ";
+	// Skill reports are triggered by Unit::Study/Practice reaching a new level, by GIVE UNIT
+	// of a unit with skills, and by items that grant a skill; SHOW SKILL accepts any level up
+	// to the highest the faction has reached.
+	temp = "When a unit of a faction reaches a new skill level for the first "
+		"time (by studying or practice, by being given to the faction, or "
+		"by getting an item that grants the skill), the faction will be "
+		"given a report on special abilities that a unit with this skill "
+		"level has. This report can be shown again at any time, for any "
+		"level up to the highest one the faction has reached, using the ";
+	temp += f.Link("#show", "SHOW") + " SKILL [skill] [level] order. For "
+		"example, when a faction ";
 	temp += "learned the skill Shoemaking level 3 for the first time, it "
 		"might receive the following (obviously farcical) report:";
 	f.Paragraph(temp);
