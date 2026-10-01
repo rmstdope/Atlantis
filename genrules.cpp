@@ -6445,10 +6445,14 @@ int Game::GenRules(const AString &rules, const AString &css,
 	f.ClassTagText("div", "rule", "");
 	f.LinkRef("avoid");
 	f.TagText("h4", "AVOID [flag]");
+	// Battle muster (GetAFacs/GetDFacs): an avoiding unit only fights if it attacks, is the
+	// target, or belongs to the target faction in that hex and the attackers can see and
+	// catch it. It never joins to help allies or from an adjacent hex.
 	temp = "AVOID 1 instructs the unit to avoid combat wherever possible. "
 		"The unit will not enter combat unless it issues an ATTACK order, "
-		"or the unit's faction is attacked in the unit's hex. AVOID 0 "
-		"cancels this.";
+		"it is itself attacked, or the unit's faction is attacked in the "
+		"unit's hex and the attackers can see and catch it. An avoiding unit "
+		"never joins a battle to help an ally. AVOID 0 cancels this.";
 	f.Paragraph(temp);
 	temp = "The Guard and Avoid Combat flags are mutually exclusive; "
 		"setting one automatically cancels the other.";
@@ -6513,40 +6517,53 @@ int Game::GenRules(const AString &rules, const AString &css,
 	}
 	temp += "If the second form is specified, the unit will attempt to buy "
 		"as many as it can afford.";
+	temp += " Not every unit may recruit people; see ";
+	temp += f.Link("#economy_recruiting", "Recruiting") + ".";
 	f.Paragraph(temp);
 	f.Paragraph(AString("Example") + (Globals->RACES_EXIST?"s":"") + ":");
 	temp = "Buy one plate armor from the city market.";
 	temp2 = "BUY 1 \"Plate Armor\"";
 	f.CommandExample(temp, temp2);
 	if (Globals->RACES_EXIST) {
-		temp = "Recruit 5 barbarians into the current unit. (This will "
-			"dilute the skills that the unit has.)";
-		temp2 = "BUY 5 barbarians";
+		// Use an enabled race (barbarians are disabled in NewOrigins).
+		temp = AString("Recruit 5 ") + ItemDefs[manidx].names + " into the "
+			"current unit. (This will dilute the skills that the unit has.)";
+		temp2 = AString("BUY 5 ") + ItemDefs[manidx].abr;    // names may contain spaces
 		f.CommandExample(temp, temp2);
 	}
 
 	f.ClassTagText("div", "rule", "");
 	f.LinkRef("cast");
 	f.TagText("h4", "CAST [skill] [arguments]");
+	// Each spell is its own skill; the tokens after the name are its arguments (there is no
+	// "cast at level N"). A unit has one cast order slot, so a later CAST replaces an earlier.
 	temp = "Cast the given spell.  Note that most spell names contain "
 		"spaces; be sure to enclose the name in quotes!  [arguments] "
 		"depends on which spell you are casting; when you are able to cast "
-		"a spell, the skill description will tell you the syntax.";
+		"a spell, the skill description will tell you the syntax.  Each "
+		"spell is a skill of its own, and is always cast at the mage's "
+		"level in it.  A unit can only cast one spell per turn; if it is "
+		"given more than one CAST order, only the last one counts.";
 	f.Paragraph(temp);
 	f.Paragraph("Examples:");
 	temp = "Cast the spell called \"Super Spell\".";
 	temp2 = "CAST \"Super Spell\"";
 	f.CommandExample(temp, temp2);
-	temp = "Cast the fourth-level spell in the \"Super Magic\" skill.";
-	temp2 = "CAST Super_Magic 4";
-	f.CommandExample(temp, temp2);
+	if (!(SkillDefs[S_FARSIGHT].flags & SkillType::DISABLED)) {
+		temp = "Cast Farsight to view region (12,8).";
+		temp2 = "CAST Farsight REGION 12 8";
+		f.CommandExample(temp, temp2);
+	}
 
 	f.ClassTagText("div", "rule", "");
 	f.LinkRef("claim");
 	f.TagText("h4", "CLAIM [amount]");
 	temp = "Claim an amount of the faction's unclaimed silver, and give it "
 		"to the unit issuing the order.  The claiming unit may then spend "
-		"the silver or give it to another unit.";
+		"the silver or give it to another unit.  CLAIM is carried out while "
+		"your orders are read, so the silver can be used by any of the "
+		"unit's orders that turn.  If you claim more than you have, the "
+		"unit gets what is left.";
 	f.Paragraph(temp);
 	f.Paragraph("Example:");
 	temp = "Claim 100 silver.";
@@ -6556,9 +6573,17 @@ int Game::GenRules(const AString &rules, const AString &css,
 	f.ClassTagText("div", "rule", "");
 	f.LinkRef("combat");
 	f.TagText("h4", "COMBAT [spell]");
+	// ParseOrders COMBAT: no argument clears it; only U_MAGE; clears readyItem, and PREPARE
+	// clears combat (PREPARE_NORMAL).
 	temp = "Set the given spell as the spell that the unit will cast in "
-		"combat.  This order may only be given if the unit can cast the "
-		"spell in question.";
+		"combat.  This order may only be given if the unit is a mage and "
+		"can cast the spell in question";
+	if (app_exist) temp += AString(" (") + Globals->APPRENTICE_NAME + "s cannot)";
+	temp += ".  COMBAT with no spell clears the combat spell.";
+	if (Globals->USE_PREPARE_COMMAND != GameDefs::PREPARE_NONE) {
+		temp += AString(" Setting a combat spell clears any item set with ") +
+			f.Link("#prepare", "PREPARE") + ", and the other way round.";
+	}
 	f.Paragraph(temp);
 	f.Paragraph("Example:");
 	temp = "Instruct the unit to use the spell \"Super Spell\", when the "
@@ -6630,22 +6655,50 @@ int Game::GenRules(const AString &rules, const AString &css,
 	f.TagText("h4", "DESCRIBE OBJECT [new description]");
 	f.TagText("h4", "DESCRIBE STRUCTURE [new description]");
 	temp = "Change the description of the unit, or of the object the unit "
-		"is in (of which the unit must be the owner). Descriptions can be "
-		"of any length, up to the line length your mailer can handle. If "
+		"is in (of which the unit must be the owner). Put the description "
+		"in double quotes; without them, only the first word is used. Some "
+		"characters, such as parentheses, are removed. If "
 		"no description is given, the description will be cleared out. The "
 		"last four are completely identical and serve to modify the "
 		"description of the object you are currently in.";
 	f.Paragraph(temp);
 	f.Paragraph("Example:");
-	temp = "Set the unit,s description to read \"Merlin's helper\".";
+	temp = "Set the unit's description to read \"Merlin's helper\".";
 	temp2 = "DESCRIBE UNIT \"Merlin's helper\"";
 	f.CommandExample(temp, temp2);
 
 	f.ClassTagText("div", "rule", "");
 	f.LinkRef("destroy");
 	f.TagText("h4", "DESTROY");
-	temp = "Destroy the object you are in (of which you must be the owner). "
-		"The order cannot be used at sea.";
+	// Game::RunDestroyOrders: owner with at least one man; only modifiable objects (fleets
+	// are not); INSTANT removes it at once, otherwise each month removes up to
+	// men x max(1, Building level) (PER_SKILL) or men points, capped per structure at
+	// max(MIN_DESTROY_POINTS, MAX_DESTROY_PERCENT of its cost); the removed points become
+	// "needs N" and can be rebuilt; when nothing is left the units are moved outside.
+	temp = "Destroy the object you are in (of which you must be the owner, "
+		"and the owning unit must have at least one man). The order cannot "
+		"be used at sea, and fleets cannot be destroyed (to get rid of "
+		"ships, give them away with ";
+	temp += f.Link("#give", "GIVE") + " 0).";
+	if (Globals->DESTROY_BEHAVIOR == DestroyBehavior::INSTANT) {
+		temp += " The structure is destroyed at once, and the units inside "
+			"are moved outside.";
+	} else {
+		temp += " Destroying a structure takes time. Each month, the owner "
+			"tears down up to ";
+		if (Globals->DESTROY_BEHAVIOR == DestroyBehavior::PER_SKILL)
+			temp += "one point per man times its Building skill level (at "
+				"least one point per man)";
+		else
+			temp += "one point per man";
+		temp += AString(", but never more than ") + Globals->MIN_DESTROY_POINTS +
+			" points or " + Globals->MAX_DESTROY_PERCENT + "% of the "
+			"structure's cost, whichever is more. A partly destroyed "
+			"structure is unfinished, just like one that is being built, "
+			"and can be repaired with ";
+		temp += f.Link("#build", "BUILD") + ". When nothing is left, the "
+			"structure is gone and the units inside are moved outside.";
+	}
 	f.Paragraph(temp);
 	f.Paragraph("Example:");
 	temp = "Destroy the current object";
@@ -6715,7 +6768,9 @@ int Game::GenRules(const AString &rules, const AString &css,
 		"another object, the unit will first leave the object it is "
 		"currently in.  The order will only work if the target object is "
 		"unoccupied, or is owned by a unit in your faction, or is owned by "
-		"a faction which has declared you Friendly.";
+		"a faction which has declared you Friendly.  Structures that are "
+		"closed to player units cannot be entered at all.  ENTER is carried "
+		"out at the very start of the turn, before any battles.";
 	f.Paragraph(temp);
 	f.Paragraph("Example:");
 	temp = "Enter fleet number 114.";
@@ -6739,7 +6794,10 @@ int Game::GenRules(const AString &rules, const AString &css,
 	f.TagText("h4", "EVICT [unit] ...");
 	temp = "Evict the specified unit from the object of which you are "
 		"currently the owner.  If multiple EVICT orders are given, all "
-		"of the units will be evicted.";
+		"of the units will be evicted.  EVICT does not work in the Nexus, "
+		"and units cannot be evicted from a fleet at sea unless they can "
+		"swim (and have not set ";
+	temp += f.Link("#nocross", "NOCROSS") + ").";
 	f.Paragraph(temp);
 	f.Paragraph("Example:");
 	temp = "Evict units 415 and 698 from an object that this unit owns.";
@@ -6757,8 +6815,10 @@ int Game::GenRules(const AString &rules, const AString &css,
 		"trade items regardless of faction stances.  The orders given by "
 		"the two units must be complementary.  If either unit involved does "
 		"not have the items it is offering, or if the exchange orders given "
-		"are not complementary, the exchange is aborted.  Men may not be "
-		"exchanged.";
+		"are not complementary, the exchange is aborted.  The amounts must "
+		"match exactly: offering more than the other unit expects also "
+		"aborts the exchange.  Men and ships may not be exchanged, nor items "
+		"that cannot be given.";
 	f.Paragraph(temp);
 	f.Paragraph("Example:");
 	temp = "Exchange 10 LBOW for 10 SWOR with unit 1310";
@@ -6883,6 +6943,17 @@ int Game::GenRules(const AString &rules, const AString &css,
 	temp += " who wish to become a normal "
 		"unit. A common reason for this is to be able to change faction "
 		"points.";
+	// FORGET runs mid-turn (RunForgetOrders), but FACTION is applied while orders are read,
+	// so the FACTION order has to wait for the next turn. A mage stays a mage until all its
+	// magic skills are gone.
+	temp += " A mage only becomes a normal unit once it has forgotten all of "
+		"its magic skills.";
+	if (Globals->FACTION_LIMIT_TYPE == GameDefs::FACLIM_FACTION_TYPES) {
+		temp += " Note that FORGET is carried out during the turn, while ";
+		temp += f.Link("#faction", "FACTION") + " takes effect as soon as your "
+			"orders are read; so forget the skills first, and send the "
+			"FACTION order the following turn.";
+	}
 	f.Paragraph(temp);
 	f.Paragraph("Example:");
 	temp = "Forget knowledge of Mining.";
@@ -6914,7 +6985,9 @@ int Game::GenRules(const AString &rules, const AString &css,
 		"this is that it must be at least 1, and you should not create two "
 		"units in the same region in the same month, with the same alias "
 		"numbers).  The new unit can then be referred to as NEW <alias> in "
-		"place of the regular unit number.";
+		"place of the regular unit number.  If an alias has already been "
+		"used in the region that month, the second FORM fails and the "
+		"orders for that unit are ignored.";
 	f.Paragraph(temp);
 	temp = "You can refer to newly created units belonging to other "
 		"factions, if you know what alias number they are, e.g. FACTION 15 "
@@ -6949,7 +7022,7 @@ int Game::GenRules(const AString &rules, const AString &css,
 	temp2 += "FORM 1\n";
 	temp2 += "    NAME UNIT \"Merlin's Guards\"\n";
 	if (Globals->RACES_EXIST)
-		temp2 += "    BUY 5 Plainsmen\n";
+		temp2 += AString("    BUY 5 ") + ItemDefs[manidx].abr + "\n";
 	else
 		temp2 += "    BUY 5 men\n";
 	temp2 += "    STUDY COMBAT\n";
@@ -6958,11 +7031,11 @@ int Game::GenRules(const AString &rules, const AString &css,
 	temp2 += "    NAME UNIT \"Merlin's Workers\"\n";
 	temp2 += "    DESCRIBE UNIT \"wearing dirty overalls\"\n";
 	if (Globals->RACES_EXIST)
-		temp2 += "    BUY 15 Plainsmen\n";
+		temp2 += AString("    BUY 15 ") + ItemDefs[manidx].abr + "\n";
 	else
 		temp2 += "    BUY 15 men\n";
 	temp2 += "END\n";
-	temp2 += "CLAIM 2500\n";
+	temp2 += "CLAIM 3000\n";    // matches the 1000 + 2000 given below
 	temp2 += "GIVE NEW 1 1000 silver\n";
 	temp2 += "GIVE NEW 2 2000 silver\n";
 	f.CommandExample(temp,temp2);
@@ -7010,10 +7083,24 @@ int Game::GenRules(const AString &rules, const AString &css,
 	temp += " order, and give the ships to the owner of the fleet that "
 		"should receive the ships.  If the recipient is not the owner "
 		"of a fleet, then a new fleet will be created owned by the "
-		"recipient.";
+		"recipient, and the recipient is moved into it.";
+	f.Paragraph(temp);
+	// GIVE UNIT (DoGiveOrder): the receiving faction must regard you Friendly, must have room
+	// under its mage/apprentice/quartermaster limits, and must not be a non-player faction.
+	temp = "When giving a whole unit, the receiving faction must have "
+		"declared you Friendly, and it cannot be a non-player faction such "
+		"as monsters or guards";
+	if (Globals->FACTION_LIMIT_TYPE != GameDefs::FACLIM_UNLIMITED) {
+		temp += "; a mage";
+		if (app_exist) temp += AString(", ") + Globals->APPRENTICE_NAME;
+		if (qm_exist) temp += " or quartermaster";
+		temp += " can only be given to a faction that has room for one more "
+			"under its limits";
+	}
+	temp += ".";
 	f.Paragraph(temp);
 	temp = "There are also a few restrictions on orders given by units who "
-		"been given to another faction. If the receiving faction is not "
+		"have been given to another faction. If the receiving faction is not "
 		"allied to the giving faction, the unit may not issue the ";
 	temp += f.Link("#advance", "ADVANCE") + " order, or issue any more ";
 	temp += f.Link("#give", "GIVE") + " orders.  Both of these rules are to "
@@ -7033,12 +7120,24 @@ int Game::GenRules(const AString &rules, const AString &css,
 	temp = "Give control of this unit to the faction owning unit 75.";
 	temp2 = "GIVE 75 UNIT";
 	f.CommandExample(temp, temp2);
-	temp = "Give our unfinished Longboat to unit 95.";
-	temp2 = "GIVE 95 1 UNFINISHED Longboat";
-	f.CommandExample(temp, temp2);
-	temp = "Transfer 2 Longboats to the fleet commanded by unit 83.";
-	temp2 = "GIVE 83 2 Longboats";
-	f.CommandExample(temp, temp2);
+	{
+		// Use the first enabled ship (the Longboat is disabled in NewOrigins).
+		int ship = -1;
+		for (i = 0; i < NITEMS && ship == -1; i++) {
+			if (ItemDefs[i].flags & ItemType::DISABLED) continue;
+			if (ItemDefs[i].type & IT_SHIP) ship = i;
+		}
+		if (ship != -1) {
+			temp = AString("Give our unfinished ") + ItemDefs[ship].name +
+				" to unit 95.";
+			temp2 = AString("GIVE 95 1 UNFINISHED ") + ItemDefs[ship].abr;
+			f.CommandExample(temp, temp2);
+			temp = AString("Transfer 2 ") + ItemDefs[ship].names +
+				" to the fleet commanded by unit 83.";
+			temp2 = AString("GIVE 83 2 ") + ItemDefs[ship].abr;
+			f.CommandExample(temp, temp2);
+		}
+	}
 
 	f.ClassTagText("div", "rule", "");
 	f.LinkRef("guard");
