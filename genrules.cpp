@@ -5985,7 +5985,8 @@ int Game::GenRules(const AString &rules, const AString &css,
 	if (Globals->TOWNS_EXIST && Globals->CITY_MONSTERS_EXIST) {
 		f.LinkRef("nonplayers_guards");
 		f.TagText("h3", "City and Town Guardsmen:");
-		temp = "All cities and towns begin with guardsmen in them.  These "
+		temp = "All settlements, including villages, begin with guardsmen in "
+			"them.  These "
 			"units will defend any units that are attacked in the city or "
 			"town, and will also prevent theft and assassination attempts, ";
 		if (has_obse)
@@ -6005,6 +6006,23 @@ int Game::GenRules(const AString &rules, const AString &css,
 			temp += "The ";
 		temp += "guards may be killed by players, although they will form "
 			"again if the city is left unguarded.";
+		// Game::CreateCityMon: CITY_GUARD * (TownType()+1) armed leaders with Combat at that
+		// level; AdjustCityMon regrows them by a tenth of full strength per month;
+		// AdjustCityMons reforms them (GUARD_REGEN % per month, at 10% strength) only when no
+		// unit at all is on guard in the region.
+		// The counts hold for leader guards; without leaders CreateCityMon builds two units of
+		// 3/4 strength each, so the numbers are only stated when LEADERS_EXIST.
+		if (Globals->LEADERS_EXIST) {
+			temp += AString(" A village has ") + Globals->CITY_GUARD + " guardsmen, a "
+				"town " + (2 * Globals->CITY_GUARD) + " and a city " +
+				(3 * Globals->CITY_GUARD) + ", armed and with a Combat skill of 1, 2 "
+				"or 3 respectively.";
+		}
+		temp += AString(" Guardsmen who survive a fight regain a tenth of ") +
+			"their full strength each month. If all of them are killed, each "
+			"month there is a " + Globals->GUARD_REGEN + "% chance that they form "
+			"again, at a tenth of their full strength, but only if no unit is on "
+			"guard in the region.";
 		f.Paragraph(temp);
 		if (Globals->START_CITIES_EXIST &&
 				(Globals->SAFE_START_CITIES ||
@@ -6048,6 +6066,17 @@ int Game::GenRules(const AString &rules, const AString &css,
 		temp = "There are a number of monsters who wander free throughout "
 			"Atlantis.  They will occasionally attack player units, so be "
 			"careful when wandering through the wilderness.";
+		// Game::CheckWMonAttack: once a month, chance = aggression / max(100, 300 - N), N = the
+		// player men the monster can see and catch; the target is picked weighted by men.
+		temp += " Each month, a monster may attack once. The chance depends on "
+			"its aggression (shown in its description) and on how many men it "
+			"can see and catch in the region: it is the aggression divided by "
+			"300 minus the number of those men, but never divided by less than "
+			"100. So even the most aggressive monster attacks a lone man only "
+			"about a third of the time, but is sure to attack when 200 or more "
+			"men are around. Its target is chosen at random, so units with "
+			"more men are more likely to be picked. Only player units are "
+			"attacked, and units the monster cannot see or catch are safe.";
 		f.Paragraph(temp);
 
 		temp = "Some monsters live in lairs, caves, and other structures players cannot enter. "
@@ -6055,8 +6084,10 @@ int Game::GenRules(const AString &rules, const AString &css,
 			"but they can attack player units present in the region. The willingness to attack is "
 			"dependent on the monster's aggression level. It is worth reminding that monsters "
 			"inside the lair will always be visible to the player regardless of their stealth score "
-			"as any other unit in the structure. Empty lairs will spawn new monsters regularly if "
-			"old ones are killed. Players can guard regions with lairs, and monsters will not spawn there.";
+			"as any other unit in the structure. ";
+		// Game::GrowLMons: an empty lair in an unguarded region respawns with LAIR_FREQUENCY %.
+		temp += AString("Each month, an empty lair has a ") + Globals->LAIR_FREQUENCY +
+			"% chance of spawning new monsters if the old ones are killed. Players can guard regions with lairs, and monsters will not spawn there.";
 		f.Paragraph(temp);
 
 		temp = "Other monsters do not live in lairs but wander freely. Wandering monsters can spawn in any "
@@ -6209,8 +6240,9 @@ int Game::GenRules(const AString &rules, const AString &css,
 		"be able to carry things at their speed of movement; use the ";
 	temp += f.Link("#show", "SHOW") + " ITEM order to determine the "
 		"carrying capacity and movement speed of a monster. Monsters will "
-		"also fight for the controlling unit in combat; their strength "
-		"can only be determined in battle. Also, note that a monster will "
+		"also fight for the controlling unit in combat; the monster's "
+		"description (shown with SHOW ITEM) gives its combat strength, "
+		"such as its skills, attacks and hit points. Also, note that a monster will "
 		"always fight from the front rank, even if the controlling unit "
 		"has the behind flag set. Whether or not you are allowed to give a "
 		"monster to other units depends on the type of monster; some may be "
@@ -6219,7 +6251,31 @@ int Game::GenRules(const AString &rules, const AString &css,
 		temp += " All monsters may be released completely by using the ";
 		temp += f.Link("#give", "GIVE") + " order targetting unit 0.  When "
 			"this is done, the monster will become a wandering monster.";
+	} else {
+		// RELEASE_MONSTERS off: GIVE 0 of a monster simply destroys it.
+		temp += " Giving a monster to unit 0 with the ";
+		temp += f.Link("#give", "GIVE") + " order gets rid of it; it does not "
+			"become a wandering monster.";
 	}
+	f.Paragraph(temp);
+	// Game::MonsterCheck, run mid-turn (CHECK_MONSTER_CONTROL_MID_TURN) or at the end of the
+	// turn: per item type, LOSS_CHANCE decays a share each month, HAS_SKILL frees them all if
+	// the controller lacks the skill level, ESC_* gives an escape chance that grows with the
+	// number held and shrinks with the skill level; LOSE_LINKED frees all linked types at once.
+	// Escaped monsters become wild monsters in the region. Which rule a monster follows is in
+	// its own and its summoning skill's description, so only the general rules are given here.
+	temp = "Controlled monsters are checked every month, ";
+	temp += Globals->CHECK_MONSTER_CONTROL_MID_TURN ?
+		"in the middle of the turn (before movement). " :
+		"at the end of the turn. ";
+	temp += "Depending on the type of monster, they may break free if the "
+		"controlling unit no longer has the skill needed to control them, "
+		"slowly fade away a few at a time, or have a chance of escaping that "
+		"grows with the number of them the unit controls and shrinks with its "
+		"skill. When some monsters escape, related types of monsters held by "
+		"the same unit may escape with them. Monsters that break free become "
+		"wild monsters in the region. The description of each monster, and of "
+		"the skill used to control it, tells you which of these applies.";
 	f.Paragraph(temp);
 	f.LinkRef("orders");
 	f.ClassTagText("div", "rule", "");
