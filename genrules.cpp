@@ -993,7 +993,9 @@ int Game::GenRules(const AString &rules, const AString &css,
 	if (Globals->LEADERS_EXIST) {
 		temp += " Leaders and normal people may not be mixed in the same "
 			"unit. However, leaders are more expensive to recruit and "
-			"maintain (more information is in the section on skills).";
+			"maintain (see the sections on ";
+		temp += f.Link("#economy_maintenance", "maintenance costs") + " and " +
+			f.Link("#economy_recruiting", "recruiting") + ").";
 	}
 	if (Globals->RACES_EXIST) {
 		temp += " A unit is treated as the least common denominator of "
@@ -7243,9 +7245,14 @@ int Game::GenRules(const AString &rules, const AString &css,
 	f.TagText("h2", "Sequence of Events");
 	temp = "Each turn, the following sequence of events occurs:";
 	f.Paragraph(temp);
+	// The order of this list mirrors Game::RunOrders (runorders.cpp), preceded by the orders
+	// the parser applies while reading the orders file (parseorders.cpp) and followed by
+	// PostProcessTurn. Keep it in step with RunOrders when phases are added or moved.
 	f.Enclose(1, "OL");
 	f.Enclose(1, "li");
-	f.PutStr("Instant orders.");
+	f.PutStr("Orders carried out while your orders are being read, in the "
+		"order they appear in your orders (this is why, for example, silver "
+		"taken with CLAIM can be used by other orders in the same turn).");
 	f.Enclose(1, "ul");
 	temp = f.Link("#turn", "TURN") + " orders are processed.";
 	f.TagText("li", temp);
@@ -7287,11 +7294,17 @@ int Game::GenRules(const AString &rules, const AString &css,
 	}
 	temp += " orders are processed.";
 	f.TagText("li", temp);
+	f.Enclose(0, "ul");
+	f.Enclose(0, "li");
+	f.Enclose(1, "li");
+	f.PutStr("Instant orders.");
+	f.Enclose(1, "ul");
 	temp = f.Link("#find", "FIND") + " orders are processed.";
 	f.TagText("li", temp);
-	temp = f.Link("#leave", "LEAVE") + " orders are processed.";
-	f.TagText("li", temp);
-	temp = f.Link("#enter", "ENTER") + " orders are processed.";
+	// RunEnterOrders(0) handles LEAVE and ENTER in a single pass over the units.
+	temp = f.Link("#leave", "LEAVE") + " and " + f.Link("#enter", "ENTER") +
+		" orders are processed, unit by unit in the order the units appear "
+		"in the report.";
 	f.TagText("li", temp);
 	temp = f.Link("#promote", "PROMOTE") + " and ";
 	temp += f.Link("#evict", "EVICT");
@@ -7302,7 +7315,17 @@ int Game::GenRules(const AString &rules, const AString &css,
 	f.Enclose(1, "li");
 	f.PutStr("Combat is processed.");
 	f.Enclose(1, "ul");
-	temp = f.Link("#attack", "ATTACK") + " orders are processed.";
+	temp = f.Link("#attack", "ATTACK") + " orders are processed";
+	if (Globals->WANDERING_MONSTERS_EXIST) {
+		// Game::DoAttackOrders also runs CheckWMonAttack for monster units.
+		temp += ", and monsters decide whether to attack";
+	}
+	temp += ".";
+	f.TagText("li", temp);
+	// Game::DoAutoAttacks: every non-avoiding unit attacks units it can see and catch whose
+	// faction its own faction has declared Hostile (monsters always avoid, so not them).
+	temp = "Units that are not set to avoid combat attack the units they can "
+		"see and catch, of factions that their faction has declared Hostile.";
 	f.TagText("li", temp);
 	f.Enclose(0, "ul");
 	f.Enclose(0, "li");
@@ -7363,6 +7386,12 @@ int Game::GenRules(const AString &rules, const AString &css,
 	f.TagText("li", temp);
 	temp = f.Link("#forget","FORGET") + " orders are processed.";
 	f.TagText("li", temp);
+	if (Globals->CHECK_MONSTER_CONTROL_MID_TURN) {
+		// Game::MidProcessTurn -> MonsterCheck.
+		f.TagText("li", "Control of summoned and controlled creatures is "
+			"checked; some may escape or fade away (see the descriptions of "
+			"the creatures and spells).");
+	}
 	temp = f.Link("#quit","QUIT") + " and ";
 	temp += f.Link("#restart", "RESTART") + " orders are processed.";
 	f.TagText("li", temp);
@@ -7387,6 +7416,17 @@ int Game::GenRules(const AString &rules, const AString &css,
 	}
 	temp += " orders are processed phase by phase (including any combat "
 		"resulting from these orders).";
+	f.TagText("li", temp);
+	// SinkUncrewedFleets and DrownUnits run right after RunMovementOrders.
+	if (may_sail) {
+		f.TagText("li", "Fleets at sea with no one aboard are lost.");
+	}
+	temp = "Units in an ocean region that are not aboard a fleet drown, unless "
+		"they can swim";
+	if (Globals->FLIGHT_OVER_WATER == GameDefs::WFLIGHT_UNLIMITED) {
+		temp += " or fly";
+	}
+	temp += ".";
 	f.TagText("li", temp);
 	f.Enclose(0, "ul");
 	f.Enclose(0, "li");
@@ -7421,6 +7461,12 @@ int Game::GenRules(const AString &rules, const AString &css,
 	f.TagText("li", temp);
 	f.Enclose(0, "ul");
 	f.Enclose(0, "li");
+	if (Globals->DYNAMIC_POPULATION || Globals->REGIONS_ECONOMY) {
+		// Game::ProcessEconomics -> ARegion::Grow.
+		temp = "The population of regions changes (see ";
+		temp += f.Link("#economy_towns", "Villages, Towns, and Cities") + ").";
+		f.TagText("li", temp);
+	}
 	temp = "Teleportation spells are ";
 	temp += f.Link("#cast", "CAST") + ".";
 	f.TagText("li", temp);
@@ -7430,6 +7476,29 @@ int Game::GenRules(const AString &rules, const AString &css,
 		f.TagText("li", temp);
 	}
 	f.TagText("li", "Maintenance costs are assessed.");
+	// Game::PostProcessTurn: victory check, ARegion::PostTurn (development, wages, markets,
+	// production), AdjustCityMons, then GrowWMons/GrowLMons/GrowVMons.
+	f.Enclose(1, "li");
+	f.PutStr("End of the turn.");
+	f.Enclose(1, "ul");
+	if (!Globals->OPEN_ENDED) {
+		f.TagText("li", "The victory conditions are checked.");
+	}
+	f.TagText("li", "Each region's development, wages, markets and "
+		"production are updated for the next month.");
+	if (Globals->CITY_MONSTERS_EXIST) {
+		f.TagText("li", "City and town guardsmen recover their strength, "
+			"or reappear.");
+	}
+	if (!Globals->CHECK_MONSTER_CONTROL_MID_TURN) {
+		f.TagText("li", "Control of summoned and controlled creatures is "
+			"checked; some may escape or fade away.");
+	}
+	if (Globals->WANDERING_MONSTERS_EXIST || Globals->LAIR_MONSTERS_EXIST) {
+		f.TagText("li", "New monsters appear.");
+	}
+	f.Enclose(0, "ul");
+	f.Enclose(0, "li");
 	f.Enclose(0, "OL");
 	temp = "Where there is no other basis for deciding in which order units "
 		"will be processed within a phase, units that appear higher on the "
