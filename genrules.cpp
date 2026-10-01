@@ -2968,7 +2968,12 @@ int Game::GenRules(const AString &rules, const AString &css,
 		f.Enclose(0, "ul");
 		temp = "";
 	} else {
-		temp += "starving to death. ";
+		// Unit::Short: walks the unit's men, ordinary men before leaders, rolling
+		// STARVE_PERCENT for each and subtracting that man's cost from the debt, until the debt
+		// is covered. NPC units never starve.
+		temp += "starving to death. This is rolled separately for each man "
+			"the unit cannot pay for, and ordinary men are at risk before "
+			"leaders. ";
 	}
 	temp += "It is up to you to make sure that your people have enough money ";
 	if (Globals->UPKEEP_MINIMUM_FOOD > 0)
@@ -2982,8 +2987,9 @@ int Game::GenRules(const AString &rules, const AString &css,
 	temp += "will be shared automatically between your units "
 		"in the same region, if one is starving and another has more than "
 		"enough; but this will not happen between units in different "
-		"regions (this sharing of money applies only for maintenance costs, "
-		"and does not occur for other purposes). If you have silver in your "
+		"regions (for other purposes, money is only shared with units that "
+		"have set ";
+	temp += f.Link("#share", "SHARE") + " 1). If you have silver in your "
 		"unclaimed fund, then that silver will be automatically claimed by "
 		"units that would otherwise starve. ";
 	if (Globals->UPKEEP_MINIMUM_FOOD && Globals->ALLOW_WITHDRAW) {
@@ -2999,7 +3005,7 @@ int Game::GenRules(const AString &rules, const AString &css,
 	f.Paragraph(temp);
 	temp = "";
 	if (Globals->MULTIPLIER_USE == GameDefs::MULT_NONE) {
-		temp += AString("This fee is generally ") +
+		temp += AString("This fee is ") +
 			Globals->MAINTENANCE_COST + " silver for a normal character";
 		if (Globals->LEADERS_EXIST) {
 			temp += AString(", and ") + Globals->LEADER_COST +
@@ -3033,20 +3039,16 @@ int Game::GenRules(const AString &rules, const AString &css,
 	}
 	temp += ".";
 	if (Globals->FOOD_ITEMS_EXIST) {
-		temp += " Units may substitute one unit of ";
-		for (last = -1, i = 0, j = 0; i < NITEMS; i++) {
+		// The old loop printed "one unit of , grain, ..." (its separator test was off by one).
+		std::vector<std::string> foods;
+		for (i = 0; i < NITEMS; i++) {
 			if (ItemDefs[i].flags & ItemType::DISABLED) continue;
 			if (!(ItemDefs[i].type & IT_FOOD)) continue;
-			if (last != -1) {
-				if (j > 0) temp += ", ";
-				temp += ItemDefs[last].names;
-			}
-			last = i;
-			j++;
+			foods.push_back(ItemDefs[i].name);
 		}
-		if (j > 0) temp += " or ";
-		temp += ItemDefs[last].names;
-		temp += " for each ";
+		temp += " Units may use one ";
+		temp += joinList(foods, "or").c_str();
+		temp += " instead of each ";
 		temp += Globals->UPKEEP_FOOD_VALUE;
 		temp += " silver of maintenance owed. ";
 		if (Globals->UPKEEP_MINIMUM_FOOD > 0) {
@@ -3062,10 +3064,53 @@ int Game::GenRules(const AString &rules, const AString &css,
 		}
 		temp += "A unit may use the ";
 		temp += f.Link("#consume", "CONSUME") + " order to specify that it "
-			"wishes to use food items in preference to silver.  Note that ";
-		temp += "these items are worth more when sold in towns, so selling "
-			"them and using the money is more economical than using them for "
-			"maintenance.";
+			"wishes to use food items in preference to silver.";
+		// Which foods are worth more eaten than sold? A "Wanted" food market starts at up to
+		// 149% of base price with RANDOM_ECONOMY (SetupCityMarket) and an unused one drifts up
+		// to 1.5x its start (Market::PostTurn), so ~2.24x base is the most it can fetch.
+		// NOMARKET foods (meals) are never traded at all.
+		{
+			std::vector<std::string> eat, sell, nomarket;
+			for (i = 0; i < NITEMS; i++) {
+				if (ItemDefs[i].flags & ItemType::DISABLED) continue;
+				if (!(ItemDefs[i].type & IT_FOOD)) continue;
+				if (ItemDefs[i].flags & ItemType::NOMARKET) {
+					nomarket.push_back(ItemDefs[i].names);
+					continue;
+				}
+				int maxprice = ItemDefs[i].baseprice *
+					(Globals->RANDOM_ECONOMY ? 149 : 100) / 100;
+				if (Globals->VARIABLE_ECONOMY) maxprice = maxprice * 3 / 2;
+				if (maxprice < Globals->UPKEEP_FOOD_VALUE)
+					eat.push_back(ItemDefs[i].names);
+				else
+					sell.push_back(ItemDefs[i].names);
+			}
+			if (!eat.empty()) {
+				temp += " Settlements pay less than ";
+				temp += Globals->UPKEEP_FOOD_VALUE;
+				temp += " silver for ";
+				temp += joinList(eat).c_str();
+				temp += ", so eating them is worth more than selling them";
+				if (!sell.empty()) {
+					temp += "; ";
+					temp += joinList(sell).c_str();
+					temp += " can sometimes be sold for more";
+				}
+				temp += ".";
+			} else if (!sell.empty()) {
+				temp += " Note that these items are usually worth more when sold "
+					"in settlements, so selling them and using the money is more "
+					"economical than eating them.";
+			}
+			if (!nomarket.empty()) {
+				std::string list = joinList(nomarket);
+				list[0] = toupper(list[0]);
+				temp += " ";
+				temp += list.c_str();
+				temp += " cannot be bought or sold in markets.";
+			}
+		}
 	};
 	f.Paragraph(temp);
 	// Payment order, mirroring Game::AssessMaintenance (runorders.cpp). Each step there is a
@@ -3170,12 +3215,45 @@ int Game::GenRules(const AString &rules, const AString &css,
 	temp += f.Link("#buy", "BUY") + " people; see the description of the ";
 	temp += f.Link("#form", "FORM")+ " order for further details.";
 	f.Paragraph(temp);
+	// ARegion::SetupEditRegion / Market::PostTurn: only the region's own race (accepted as
+	// PEASANT too) and leaders are for sale; amounts are population/25 and /125, reset each
+	// month; price = wages * 4 * race base price / BASE_MAN_COST.
+	temp = "Only the race that lives in the region";
+	if (Globals->LEADERS_EXIST) temp += ", and leaders,";
+	temp += " can be recruited there; the local race can also be bought as "
+		"PEASANT. Each month, one in 25 of the region's people is available "
+		"for recruiting";
+	if (Globals->LEADERS_EXIST) temp += ", and one in 125 as leaders";
+	temp += ". The price is about four times the region's wages, adjusted "
+		"for the race";
+	if (Globals->LEADERS_EXIST) temp += " (leaders cost much more)";
+	temp += ". If units try to recruit more people than are available, the "
+		"recruits are shared out between them in proportion to how many "
+		"each tried to buy.";
+	f.Paragraph(temp);
+	// Game::GetBuyAmount refuses BUY of men for mages, apprentices and quartermasters, and
+	// mixing leaders with normal men; different non-leader races may be mixed.
+	temp = "Mages, ";
+	temp += AString(Globals->APPRENTICE_NAME) + "s and quartermasters cannot "
+		"recruit more men";
+	if (Globals->LEADERS_EXIST)
+		temp += ", and leaders cannot be recruited into a unit of normal men "
+			"or the other way round (different races of normal men can be "
+			"mixed)";
+	temp += ". Recruiting into a unit that has skills spreads its training "
+		"over more men, which can lower its skill levels (see ";
+	temp += f.Link("#skills_limitations", "Skills") + ").";
+	f.Paragraph(temp);
 	f.LinkRef("economy_items");
 	f.TagText("h3", "Items:");
 	temp = "A unit may have a number of possessions, referred to as "
 		"\"items\".  Some details were given above in the section on "
 		"Movement, but many things were left out. Here is a table giving "
-		"some information about common items in Atlantis:";
+		"some information about common items in Atlantis. The number in "
+		"brackets after the weight is how much the item can carry when "
+		"walking, besides itself; 0 means that it can walk by itself but "
+		"carries nothing else. Man-months per item is the amount of work "
+		"needed to produce one item:";
 	f.Paragraph(temp);
 	f.LinkRef("tableiteminfo");
 	f.Enclose(1, "center");
@@ -3184,7 +3262,7 @@ int Game::GenRules(const AString &rules, const AString &css,
 	f.TagText("td", "&nbsp;");
 	f.TagText("th", "Skill (min level)");
 	f.TagText("th", "Material");
-	f.TagText("th", "Production time");
+	f.TagText("th", "Man-months per item");
 	f.TagText("th", "Weight (capacity)");
 	f.TagText("th", "Extra Information");
 	f.Enclose(0, "tr");
@@ -3238,7 +3316,6 @@ int Game::GenRules(const AString &rules, const AString &css,
 		f.Enclose(1, "td align=\"left\" nowrap");
 		if (ItemDefs[i].pMonths) {
 			temp = ItemDefs[i].pMonths;
-			temp += AString(" month") + (ItemDefs[i].pMonths == 1 ? "" : "s");
 		} else {
 			temp = "&nbsp;";
 		}
@@ -3316,6 +3393,19 @@ int Game::GenRules(const AString &rules, const AString &css,
 				temp += "May be used during assassinations.<br />";
 			}
 		}
+		if (ItemDefs[i].type & IT_FOOD) {
+			temp += AString("Can be eaten instead of ") + Globals->UPKEEP_FOOD_VALUE +
+				" silver of maintenance.<br />";
+		}
+		if (ItemDefs[i].type & IT_BATTLE) {
+			// Battle items (shields here) used to get an empty cell; reuse the same text the
+			// item description gives (ShowSpecial, as in ItemDescription).
+			BattleItemType *bt = FindBattleItem(ItemDefs[i].abr);
+			if (bt && (bt->flags & BattleItemType::SHIELD)) {
+				temp += AString("Provides ") + ShowSpecial(bt->special, bt->skillLevel, 1, 1) +
+					"<br />";
+			}
+		}
 		if (ItemDefs[i].type & IT_TOOL) {
 			for (j = 0; j < NITEMS; j++) {
 				if (ItemDefs[j].flags & ItemType::DISABLED) continue;
@@ -3343,22 +3433,33 @@ int Game::GenRules(const AString &rules, const AString &css,
 	}
 	f.Enclose(0, "table");
 	f.Enclose(0, "center");
-	temp = "All items except silver and trade goods are produced with the ";
-	temp += f.Link("#produce", "PRODUCE") + " order.";
-
-	temp += " Producing items will always produce as many items as "
-		"during a month up to the limit of the supplies carried by the "
-		"producing unit. The required skills and raw materials required "
-		"to produce one output item are in the table above.";
+	// Game::RunUnitProduce: output = (men * level + tool bonus) / pMonths, limited by the
+	// materials the unit and its SHARE-ing units hold; PRODUCE n caps it and re-queues the rest.
+	temp = "The items in the table are produced with the ";
+	temp += f.Link("#produce", "PRODUCE") + " order. Other things are obtained "
+		"in other ways: silver is earned (see ";
+	temp += f.Link("#economy_income", "Income") + "), men are recruited with ";
+	temp += f.Link("#buy", "BUY");
+	if (may_sail) temp += AString(", ships are built with ") + f.Link("#build", "BUILD");
+	temp += ", magic items are created with spells, and trade goods can only "
+		"be bought. The skill and the raw materials needed to produce one "
+		"item are in the table above. In a month, a unit produces as many "
+		"items as its work allows (see below), but no more than the "
+		"materials held by the unit";
+	temp += " (and by units of yours in the same region that have set ";
+	temp += f.Link("#share", "SHARE") + " 1) are enough for. A unit can also "
+		"be told how many items to make, for example PRODUCE 10 SWORDS; it "
+		"then stops when it has made that many, and continues next month if "
+		"it has not.";
 	f.Paragraph(temp);
 	
 	temp = "If an item requires raw materials, then the specified "
 		"amount of each material is consumed for each item produced. ";
 	temp += "The higher the skill of the unit, the more productive each "
-		"man-month of work will be.  Thus, five men at skill level one are "
-		"exactly equivalent to one guy at skill level 5 in terms of base "
-		"output. Items which require multiple man-months to produce will "
-		"take still benefit from higher skill level units, just not as "
+		"man-month of work will be.  Thus, without tools, five men at skill "
+		"level one are exactly equivalent to one man at skill level 5 in "
+		"terms of output. Items which require multiple man-months to produce "
+		"will still benefit from higher skill level units, just not as "
 		"quickly.  For example, if a unit of six level one men wanted to "
 		"produce something which required three man-months per item, that "
 		"unit could produce two of them in one month.  If their skill level "
@@ -3391,11 +3492,18 @@ int Game::GenRules(const AString &rules, const AString &css,
 		f.Paragraph(temp);
 	}
 	
-	temp = "Items which increase production may increase production of "
-		"advanced items in addition to the basic items listed.  Some of "
-		"them also increase production of other tools.  Read the skill "
-		"descriptions for details on which tools aid which production when "
-		"not noted above.";
+	// Unit::GetProductionBonus: min(tools held, men) * mult_val, added to men * level. Only the
+	// producing unit's own tools count.
+	temp = "Tools increase production. The amount of work a unit does in a "
+		"month is the number of men times their skill level, plus the "
+		"bonus of the tools it holds: each tool adds the bonus shown in the "
+		"table (for example +1), but only one tool per man counts. For "
+		"example, 4 men at level 2 with 4 tools that give +1 do 4 x 2 + 4 = "
+		"12 man-months of work, enough for 12 items that need one man-month "
+		"each. The tools must be held by the producing unit itself. Tools "
+		"may also increase production of advanced items and of other tools; "
+		"each item's description (see the ";
+	temp += f.Link("#show", "SHOW") + " order) lists what it helps to produce.";
 	f.Paragraph(temp);
 	temp = "If an item does not list a raw material it may be produced "
 		"directly from the land. Each region generally has at least one item "
@@ -3406,30 +3514,63 @@ int Game::GenRules(const AString &rules, const AString &css,
 	if (Globals->RANDOM_ECONOMY) {
 		temp += "It also varies from region to region of the same type. ";
 	}
+	// Game::RunAProduction: each unit gets amount * its share of the attempted total, rounded
+	// down, computed in report order on what is left -- so the remainder goes to later units.
 	temp += "If the units in a region attempt to produce more of a commodity "
 		"than can be produced that month, then the amount available is "
-		"distributed among the producers";
+		"distributed among the producers in proportion to how much each "
+		"could have produced. Each share is rounded down, and what is left "
+		"over goes to the units further down the list in the turn report.";
+	f.Paragraph(temp);
+	// Markets: Wanted = M_SELL (players SELL), For Sale = M_BUY (players BUY). Market::PostTurn
+	// moves the price 1/5 of the way toward a target each month: buying raises a For Sale
+	// target above the start price, selling lowers a Wanted target, and with no sales a Wanted
+	// target is 1.5x its start price. Amounts grow with the region's population between each
+	// market's thresholds; ARegion::WriteMarkets skips markets with amount 0.
+	f.LinkRef("economy_markets");
+	f.TagText("h3", "Markets:");
+	temp = "The region report shows the region's markets. \"Wanted\" lists "
+		"goods that the region will buy from you, with the ";
+	temp += f.Link("#sell", "SELL") + " order, and \"For Sale\" lists goods "
+		"you can buy, with the " + f.Link("#buy", "BUY") + " order; each "
+		"entry gives the amount and the price per item. Every region where "
+		"people live sells recruits (see Recruiting); other markets are found "
+		"in settlements.";
+	if (Globals->VARIABLE_ECONOMY) {
+		temp += " The amount in each market is renewed every month, and grows "
+			"as the region's population grows; a market with nothing to trade "
+			"is not shown. Prices change with trade: buying an item makes it "
+			"more expensive, and selling an item makes the region pay less "
+			"for it. Prices move a fifth of the way toward their new level "
+			"each month, so the effect builds up over several months. A "
+			"wanted item that nobody sells slowly becomes more valuable, up "
+			"to half again its starting price.";
+	}
 	f.Paragraph(temp);
 	if (Globals->TOWNS_EXIST) {
 		f.LinkRef("economy_towns");
 		f.TagText("h3", "Villages, Towns, and Cities:");
+		// ARegion::AddTown -> SetupCityMarket, once, at founding: food markets (open at once),
+		// then up to 4 wanted and 2 for-sale normal goods and the trade goods, each with its
+		// own population threshold above the founding population. Nothing ties them to the
+		// village/town/city class.
 		temp = "Some regions in Atlantis contain villages, towns, and "
-			"cities.  Villages add to the wages, population, and tax income "
-			"of the region they are in. ";
+			"cities.  A settlement adds to the wages, population, and tax "
+			"income of the region it is in. ";
 		if (Globals->FOOD_ITEMS_EXIST) {
-			temp += "Also, villages will have an additional market for "
-				"grain, livestock, and fish. ";
+			std::vector<std::string> foods;
+			for (int it : { I_GRAIN, I_LIVESTOCK, I_FISH }) {
+				if (!(ItemDefs[it].flags & ItemType::DISABLED))
+					foods.push_back(ItemDefs[it].name);
+			}
+			temp += "Every settlement wants ";
+			temp += joinList(foods).c_str();
+			temp += " from the start. ";
 		}
-		temp += "As the village's demand for these goods is met, the "
-			"population will increase. When the population reaches a "
-			"certain threshold, the village will turn into a town.  A "
-			"town will have some additional products that it demands, "
-			"in addition to what it previously wanted.  Also a town "
-			"will sell some new items as well. A town whose demands are "
-			"being met will grow, and above another threshold it will "
-			"become a full-blown city.  A city will have additional "
-			"markets for common items, and will also have markets for "
-			"less common, more expensive trade items.";
+		temp += "Its other markets are chosen when it is founded, and open one "
+			"by one as the region's population grows, so a settlement that "
+			"grows will trade in more goods. Which goods a settlement trades "
+			"does not depend on whether it is a village, a town or a city.";
 		f.Paragraph(temp);
 		// Population growth runs in Game::ProcessEconomics -> ARegion::Grow, only when
 		// DYNAMIC_POPULATION or REGIONS_ECONOMY is set, and only for regions a player unit has
@@ -3570,9 +3711,34 @@ int Game::GenRules(const AString &rules, const AString &css,
 				"region is pillaged, can also drop back to a smaller type.";
 			f.Paragraph(temp);
 		}
-		temp = "Trade items are bought and sold only by cities, and have "
-			"no other practical uses.  However, the profit margins on "
-			"these items are usually quite high. ";
+		// SetupCityMarket: two trade goods wanted (250-349% of base price with
+		// MORE_PROFITABLE_TRADE_GOODS) and two for sale (100-189%), opening only at high
+		// population; a market whose threshold lies beyond the maximum is never created.
+		temp = "Trade items have no use other than trading. Each settlement "
+			"is given two trade items that it wants and two that it sells, "
+			"but these markets only open when the region's population is "
+			"large, so in practice they are found in large towns and cities, "
+			"and some settlements never get them.";
+		if (Globals->RANDOM_ECONOMY && Globals->MORE_PROFITABLE_TRADE_GOODS) {
+			temp += " The profit margins are high: a settlement that wants a "
+				"trade item pays between two and a half and three and a half "
+				"times its base price, while one that sells it asks between "
+				"one and two times its base price.";
+		} else {
+			temp += " The profit margins on these items are usually quite high.";
+		}
+		{
+			std::vector<std::string> trade;
+			for (i = 0; i < NITEMS; i++) {
+				if (ItemDefs[i].flags & (ItemType::DISABLED | ItemType::NOMARKET)) continue;
+				if (ItemDefs[i].type & IT_TRADE) trade.push_back(ItemDefs[i].names);
+			}
+			if (!trade.empty()) {
+				temp += " The trade items are ";
+				temp += joinList(trade).c_str();
+				temp += ".";
+			}
+		}
 		f.Paragraph(temp);
 	}
 	f.LinkRef("economy_buildings");
