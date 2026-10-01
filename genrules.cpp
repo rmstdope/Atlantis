@@ -7197,10 +7197,11 @@ int Game::GenRules(const AString &rules, const AString &css,
 	f.ClassTagText("div", "rule", "");
 	f.LinkRef("hold");
 	f.TagText("h4", "HOLD [flag]");
+	// Units helping from an adjacent region never actually leave their building (and keep
+	// its protection with EXTENDED_FORT_DEFENCE); HOLD only keeps the unit out of those battles.
 	temp = "HOLD 1 instructs the issuing unit to never join a battle in "
-		"regions the unit is not in.  This can be useful if the unit is in "
-		"a building, and doesn't want to leave the building to join combat. "
-		"HOLD 0 cancels holding status.";
+		"regions the unit is not in, for example to keep a unit out of "
+		"its neighbours' fights.  HOLD 0 cancels holding status.";
 	f.Paragraph(temp);
 	f.Paragraph("Example:");
 	temp = "Instruct the unit to avoid combat in other regions.";
@@ -7266,7 +7267,9 @@ int Game::GenRules(const AString &rules, const AString &css,
 		temp += " If a unit is capable of swimming ";
 		if (Globals->FLIGHT_OVER_WATER != GameDefs::WFLIGHT_NONE)
 			temp += "or flying ";
-		temp += "then this order is usable to leave a boat while at sea.";
+		temp += "then this order is usable to leave a boat while at sea, "
+			"provided that it has not set ";
+		temp += f.Link("#nocross", "NOCROSS") + ".";
 	} else
 		temp += " The order cannot be used at sea.";
 	f.Paragraph(temp);
@@ -7282,9 +7285,13 @@ int Game::GenRules(const AString &rules, const AString &css,
 		"one direction is given, the unit will move multiple times, in "
 		"the order specified by the MOVE order, until no more directions "
 		"are given, or until one of the moves fails.  A move can fail "
-		"because the units runs out of movement points, because the unit "
-		"attempts to move into the ocean, or because the units attempts "
-		"to enter a structure, and is rejected.";
+		"because the unit attempts to move into the ocean (only units that "
+		"can swim or fly, and have not set NOCROSS, may do so), or because "
+		"guards stop it from entering a region.  If the unit is refused "
+		"entry to a structure, it gets an error but carries on with the "
+		"rest of its move.  If the unit runs out of movement points, the "
+		"remaining moves are kept and continue next turn (see ";
+	temp += f.Link("#movement_order", "Order of Movement") + ").";
 	f.Paragraph(temp);
 	temp = "Valid directions are:";
 	f.Paragraph(temp);
@@ -7307,8 +7314,9 @@ int Game::GenRules(const AString &rules, const AString &css,
 	f.Paragraph(temp);
 	temp = "Note that MOVE orders can lead to combat, due to hostile units "
 		"meeting, or due to an advancing unit being forbidden access to a "
-		"region.  Combat occurs after an antire movement phase has "
-		"been completed for all regions.";
+		"region.  Combat occurs after an entire movement phase has "
+		"been completed for all regions, so units coming from different "
+		"regions only fight together if they arrive in the same phase.";
 	f.Paragraph(temp);
 	temp = "Example 1: Units 1 and 2 are in Region A, and unit 3 is in "
 		"Region B.  Units 1 and 2 are hostile to unit 3.  Both units "
@@ -7375,6 +7383,13 @@ int Game::GenRules(const AString &rules, const AString &css,
 	f.Paragraph(temp);
 	temp = "If multiple units are on one side in a battle, they must all "
 		"have the NOAID flag on, or they will receive aid from other hexes.";
+	if (Globals->ALLIES_NOAID) {
+		temp += " If every unit of the defending faction in the region has "
+			"NOAID set, its allies in the same region stay out of the battle "
+			"too.";
+	}
+	temp += " See ";
+	temp += f.Link("#com_muster", "the muster") + ".";
 	f.Paragraph(temp);
 	f.Paragraph("Example:");
 	temp = "Set a unit to receive no aid in battle.";
@@ -7414,7 +7429,7 @@ int Game::GenRules(const AString &rules, const AString &css,
 	f.TagText("h4", "OPTION TEMPLATE MAP");
 	temp = "The OPTION order is used to toggle various settings that "
 		"affect your reports, and other email details. OPTION TIMES sets it "
-		"so that your faction receives the times each week (this is the "
+		"so that your faction receives the times each turn (this is the "
 		"default); OPTION NOTIMES sets it so that your faction is not sent "
 		"the times.";
 	f.Paragraph(temp);
@@ -7423,8 +7438,8 @@ int Game::GenRules(const AString &rules, const AString &css,
 		"your attitude towards them.  These characters are \"!\" for "
 		"hostile, \"%\" for unfriendly, \"-\" for neutral, "
 		"\":\" for friendly and \"=\" for allied. "
-		"OPTION DONTSHOWATTITUDES turns off this additional "
-		"decoration. ";
+		"OPTION DONTSHOWATTITUDES turns this off again, so that all other "
+		"factions' units are marked with \"-\" (this is the default). ";
 	f.Paragraph(temp);
 	temp = "The OPTION TEMPLATE order toggles the length of the Orders "
 		"Template that appears at the bottom of a turn report.  The OFF "
@@ -7569,10 +7584,15 @@ int Game::GenRules(const AString &rules, const AString &css,
 	temp += "mutually exclusive; a unit may only attempt to do one in a "
 		"turn.";
 	if (Globals->TAX_PILLAGE_MONTH_LONG) {
-		temp += " PILLAGE is a month long order, like TAX. See the section on ";
-		temp += f.Link("#economy_taxingpillaging", "taxing and pillaging") +
-			" for when pillaging is possible.";
+		temp += " PILLAGE is a month long order, like TAX.";
 	}
+	// ARegion::CanPillage: any guard of another faction blocks it, allies included; the
+	// threshold is in RunPillageOrders.
+	temp += " Units on guard of any other faction, even allied ones, prevent "
+		"pillaging, and pillaging fails unless enough men are pillaging to "
+		"tax at least half of the region's money. See the section on ";
+	temp += f.Link("#economy_taxingpillaging", "taxing and pillaging") +
+		" for details.";
 	f.Paragraph(temp);
 	f.Paragraph("Example:");
 	temp = "Pillage the current hex.";
@@ -7598,6 +7618,12 @@ int Game::GenRules(const AString &rules, const AString &css,
 		}
 		temp += "and also cancels any spells set via the ";
 		temp += f.Link("#combat", "COMBAT") + " order.";
+		// Soldier::SetupCombatItems: with a prepared item, only it (and shields) are used.
+		if (Globals->USE_PREPARE_COMMAND == GameDefs::PREPARE_NORMAL) {
+			temp += " If an item is prepared, it is the only battle item the "
+				"unit uses, apart from shields.";
+		}
+		temp += " PREPARE with no item clears the setting.";
 		f.Paragraph(temp);
 		f.Paragraph("Example:");
 		temp = "Select a staff of fire as the ";
@@ -7631,8 +7657,8 @@ int Game::GenRules(const AString &rules, const AString &css,
 	f.LinkRef("promote");
 	f.TagText("h4", "PROMOTE [unit]");
 	temp = "Promote the specified unit to owner of the object of which you "
-		"are currently the owner.  The target unit must have declared you "
-		"Friendly.";
+		"are currently the owner.  The target unit must be inside the same "
+		"object; its faction's attitude towards you does not matter.";
 	f.Paragraph(temp);
 	f.Paragraph("Example:");
 	temp = "Promote unit 415 to be the owner of the object that this unit "
@@ -7644,9 +7670,10 @@ int Game::GenRules(const AString &rules, const AString &css,
 	f.LinkRef("quit");
 	f.TagText("h4", "QUIT [password]");
 	temp = "Quit the game.  On issuing this order, your faction will be "
-		"completely and permanently destroyed. Note that you must give "
-		"your password for the quit order to work; this is to provide "
-		"some safety against accidentally issuing this order.";
+		"completely and permanently destroyed. Note that if your faction "
+		"has a password, you must give it for the quit order to work; this "
+		"is to provide some safety against accidentally issuing this "
+		"order.";
 	f.Paragraph(temp);
 	temp = "Note that although this order affects the faction as a whole, "
 		"it nevertheless needs to be issued by an individual unit, "
@@ -7668,9 +7695,9 @@ int Game::GenRules(const AString &rules, const AString &css,
 	temp += f.Link("#quit", "QUIT") + " order, this order will completely "
 		"and permanently destroy your faction. However, it will begin a "
 		"brand new faction for you (you will get a separate turn report for "
-		"the new faction). Note that you must give your password for this "
-		"order to work, to provide some protection against accidentally "
-		"issuing this order.";
+		"the new faction). Note that if your faction has a password, you "
+		"must give it for this order to work, to provide some protection "
+		"against accidentally issuing this order.";
 	f.Paragraph(temp);
 	f.Paragraph("Example:");
 	temp = "Restart faction 27 as a new faction if your password is foobar.";
@@ -7698,7 +7725,7 @@ int Game::GenRules(const AString &rules, const AString &css,
 	temp = "Show the unit to all factions.";
 	temp2 = "REVEAL UNIT";
 	f.CommandExample(temp, temp2);
-	temp = "Show the unit and it's affiliation to all factions.";
+	temp = "Show the unit and its affiliation to all factions.";
 	temp2 = "REVEAL FACTION";
 	f.CommandExample(temp, temp2);
 	temp = "Cancels revealing.";
@@ -7713,7 +7740,10 @@ int Game::GenRules(const AString &rules, const AString &css,
 		temp = "The first form will sail the fleet, which the unit must be "
 			"the owner of, in the directions given.  The second form "
 			"will cause the unit to aid in the sailing of the fleet, using "
-			"the Sailing skill.  See the section on movement for more "
+			"the Sailing skill.  Besides the compass directions, PAUSE (or P) "
+			"makes the fleet spend one movement point manoeuvring where it "
+			"is.  Directions the fleet does not get to this month are kept, "
+			"and it continues next turn.  See the section on movement for more "
 			"information on the mechanics of sailing.";
 		f.Paragraph(temp);
 		f.Paragraph("Example:");
@@ -7732,8 +7762,10 @@ int Game::GenRules(const AString &rules, const AString &css,
 		f.TagText("h4", "SELL ALL [item]");
 		temp = "Attempt to sell the amount given of the item given.  If the "
 			"unit does not have as many of the item as it is trying to sell, "
-			"it will attempt to sell all that it has. The second form will "
-			"attempt to sell all of that item, regardless of how many it has. "
+			"it will attempt to sell all that it has. The first form can also "
+			"sell items held by units of yours in the region that have set ";
+		temp += f.Link("#share", "SHARE") + " 1. The second form will "
+			"attempt to sell all of that item the unit itself has. "
 			"If more of the item are on sale (by all the units in the region) "
 			"than are wanted by the region, the number sold per unit will be "
 			"split up in proportion to the number each unit tried to sell.";
@@ -7837,14 +7869,20 @@ int Game::GenRules(const AString &rules, const AString &css,
 			"continue to fly:";
 	temp2 = "SPOILS FLY";
 	f.CommandExample(temp, temp2);
+	f.Paragraph("The old NOSPOILS order is no longer supported; use SPOILS "
+		"instead.");
 
 	if (has_stea) {
 		f.ClassTagText("div", "rule", "");
 		f.LinkRef("steal");
 		f.TagText("h4", "STEAL [unit] [item]");
-		temp = "Attempt to steal as much as possible of the specified "
-			"item from the specified unit. The order may only be issued "
-			"by a one-man unit.";
+		// Do1Steal: one item, or for silver half the target's silver, at most 200.
+		temp = "Attempt to steal the specified item from the specified unit. "
+			"A successful theft takes one of the item, or, for silver, half "
+			"of the target's silver, up to 200. Men and creatures cannot be "
+			"stolen, and guards and monsters cannot be stolen from. The order "
+			"may only be issued by a one-man unit (see ";
+		temp += f.Link("#stealthobs_stealing", "Stealing") + ").";
 		f.Paragraph(temp);
 		temp = "A unit may only attempt to steal from a unit which is "
 			"able to be seen.";
@@ -7985,6 +8023,8 @@ int Game::GenRules(const AString &rules, const AString &css,
 		temp += " For long distance transport between quartermasters, the "
 			"issuing unit must also be a quartermaster and be the owner of "
 			"a transport structure.";
+		temp += " The target's faction must have declared the issuing "
+			"unit's faction Friendly.";
 		// Gated like the BUILD text on BUILD_NO_TRADE: CheckTransportOrders skips the TRADE
 		// ActivityCheck entirely when TRANSPORT_NO_TRADE is set (it is in NewOrigins).
 		if (SomeItemsNotTransportable()) {
@@ -8014,6 +8054,20 @@ int Game::GenRules(const AString &rules, const AString &css,
 		"row will execute on successive turns, and if they all repeat, they "
 		"will form a loop of orders.  Each TURN section must be ended by an "
 		"ENDTURN line.";
+	f.Paragraph(temp);
+	// ARegion::WriteTemplate / Game::DefaultOrders: TURN blocks, queued MOVE/SAIL remainders
+	// and repeating STUDY/PRODUCE orders are not stored anywhere else -- they live only as
+	// lines in the next orders template. No orders (or deleted lines) means they are gone.
+	temp = "TURN blocks, the remaining moves of an unfinished ";
+	temp += f.Link("#move", "MOVE") + " or " + f.Link("#sail", "SAIL") +
+		", and orders that carry on into the next month (such as a ";
+	temp += f.Link("#study", "STUDY") + " or " + f.Link("#produce", "PRODUCE") +
+		" with a target) are only kept as lines in your next orders "
+		"template. If you do not send orders, or remove those lines from "
+		"the orders you send, they are lost";
+	if (Globals->DEFAULT_WORK_ORDER)
+		temp += ", and the unit falls back to its default order";
+	temp += ".";
 	f.Paragraph(temp);
 	f.Paragraph("Examples:");
 	// With TAX_PILLAGE_MONTH_LONG, PILLAGE and ADVANCE are both month long orders, so a
@@ -8083,7 +8137,8 @@ int Game::GenRules(const AString &rules, const AString &css,
 			"for a unit.  After searching for weapons on the preferred "
 			"list, the standard weapon precedence takes effect if a weapon "
 			"hasn't been set.  The second form clears the preferred weapon "
-			"list.";
+			"list.  At most four weapons can be listed, and your faction must "
+			"know each of them.";
 		f.Paragraph(temp);
 		f.Paragraph("Examples");
 		temp = "Set the unit to select double bows, then longbows then "
@@ -8105,7 +8160,10 @@ int Game::GenRules(const AString &rules, const AString &css,
 			"withdraw any other than a basic item, an error will be given. "
 			"Withdraw CANNOT be used in the Nexus (to prevent building "
 			"towers and such there).  The first form is the same as "
-			"WITHDRAW 1 [item] in the second form.";
+			"WITHDRAW 1 [item] in the second form.  Each item costs two and "
+			"a half times its base price, paid from your unclaimed silver; "
+			"silver itself cannot be withdrawn (use ";
+		temp += f.Link("#claim", "CLAIM") + ").";
 		f.Paragraph(temp);
 		f.Paragraph("Examples:");
 		temp = "Withdraw 5 stone.";
