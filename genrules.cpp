@@ -7507,15 +7507,53 @@ int Game::GenRules(const AString &rules, const AString &css,
 	f.LinkRef("reportformat");
 	f.ClassTagText("div", "rule", "");
 	f.TagText("h2", "Report Format");
-	temp = "The most important sections of the turn report are the \"Events "
-		"During Turn\" section which lists what happened last month, and "
-		"the \"Current Status\" section which gives the description of each "
-		"region in which you have units.";
+	// Section order and conditions mirror Faction::WriteReport (faction.cpp); a section with
+	// nothing in it is not printed. There is no "Current Status" heading: the region
+	// descriptions simply follow the last section.
+	temp = "Your turn report contains the following parts, in this order. A "
+		"section is left out when there is nothing to put in it.";
 	f.Paragraph(temp);
-	temp = "Your units in the Current Status section are flagged with a "
+	f.Enclose(1, "ul");
+	if (Globals->FACTION_STATISTICS) {
+		f.TagText("li", "A table summarising the items your faction owns "
+			"(these lines start with \";\").");
+	}
+	f.TagText("li", "Your faction's name and type, the date, and any important "
+		"messages, such as warnings.");
+	if (Globals->FACTION_LIMIT_TYPE != GameDefs::FACLIM_UNLIMITED) {
+		f.TagText("li", "\"Faction Status\": for each limit of your faction "
+			"type, how much of it you are using, with the maximum allowed in "
+			"brackets.");
+	}
+	f.TagText("li", "\"Errors during turn\": orders that could not be carried "
+		"out, and why.");
+	f.TagText("li", "\"Battles during turn\": reports of any battles your units "
+		"took part in.");
+	f.TagText("li", "\"Events during turn\": what your units did and what "
+		"happened to them.");
+	f.TagText("li", "\"Skill reports\", \"Item reports\" and \"Object "
+		"reports\": descriptions of skill levels, items and structures that "
+		"your faction has come across for the first time.");
+	f.TagText("li", "\"Declared Attitudes\": the attitudes you have declared "
+		"towards other factions.");
+	f.TagText("li", "\"Unclaimed silver\": your faction's unclaimed money.");
+	f.TagText("li", "A description of each region in which you have units, or "
+		"which you can see in some other way.");
+	f.Enclose(0, "ul");
+	temp = "The most important parts are the events, which list what happened "
+		"last month, and the region descriptions.";
+	f.Paragraph(temp);
+	// Unit::WriteReport: "*" for your own units; others get "-", or with OPTION
+	// SHOWATTITUDES a marker for YOUR faction's declared attitude towards theirs
+	// (Object::Report passes fac->GetAttitude(u->faction->num)).
+	temp = "In the region descriptions, your own units are flagged with a "
 		"\"*\" character. Units belonging to other factions are flagged "
-		"with a \"-\" character. You may be informed which faction they "
-		"belong to, if ";
+		"with a \"-\" character";
+	temp += AString(", or, if you have set ") + f.Link("#option", "OPTION") +
+		" SHOWATTITUDES, with a character showing your attitude towards their "
+		"faction: \"=\" for Ally, \":\" for Friendly, \"-\" for Neutral, \"%\" "
+		"for Unfriendly and \"!\" for Hostile. You may be informed which "
+		"faction they belong to, if ";
 	if (has_obse)
 		temp += "you have high enough Observation skill or ";
 	temp += "they are revealing that information.";
