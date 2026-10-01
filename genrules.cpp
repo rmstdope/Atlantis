@@ -1066,11 +1066,23 @@ int Game::GenRules(const AString &rules, const AString &css,
 	f.LinkRef("world");
 	f.ClassTagText("div", "rule", "");
 	f.TagText("h2", "The World");
-	temp = "The Atlantis world is divided for game purposes into "
-		"hexagonal regions.  Each region has a name, and one of the "
-		"following terrain types:  Ocean, Plain, Forest, Mountain, ";
-	temp += "Swamp, Jungle, Desert, or Tundra ";
-	temp += "(there may be other types of terrain to be discovered as the "
+	// Terrain list built from the same SHOW_RULES flag as the region resources table, so the
+	// two can't disagree (it used to be a fixed list without Volcano).
+	{
+		std::vector<std::string> terrains;
+		for (i = 0; i < R_NUM; i++) {
+			if (!(TerrainDefs[i].flags & TerrainType::SHOW_RULES)) continue;
+			std::string name = TerrainDefs[i].name;
+			if (!name.empty()) name[0] = toupper(name[0]);
+			terrains.push_back(name);
+		}
+		if (Globals->LAKES > 0) terrains.push_back("Lake");
+		temp = "The Atlantis world is divided for game purposes into "
+			"hexagonal regions.  Each region has a name, and one of the "
+			"following terrain types:  ";
+		temp += joinList(terrains, "or").c_str();
+	}
+	temp += " (there may be other types of terrain to be discovered as the "
 		"game progresses). Regions can contain units belonging to "
 		"players; they can also contain structures such as buildings";
 	if (may_sail)
@@ -1079,7 +1091,50 @@ int Game::GenRules(const AString &rules, const AString &css,
 		"one of them is concealed in some way.  Two units in different "
 		"regions cannot normally interact.  NOTE: Combat is an exception "
 		"to this.";
+	// ARegionArray::GetRegion wraps x; ARegionList::NeighSetup gives the top and bottom rows
+	// no northern/southern neighbours, so the flat map wraps east-west only.
+	if (!Globals->ICOSAHEDRAL_WORLD) {
+		temp += " The world wraps around from east to west: travelling off "
+			"the eastern edge brings you back on the western edge. It does "
+			"not wrap from north to south.";
+	}
 	f.Paragraph(temp);
+	// Levels: CreateLevels with UNDERWORLD/UNDERDEEP/ABYSS levels below the surface;
+	// ARegion::ShortPrint adds the level name to coordinates off the surface; each ruleset's
+	// world.cpp links the levels with two-way O_SHAFT objects (inner location, MOVE IN), and
+	// its CheckRegionExit removes some exits between underground regions.
+	if (Globals->UNDERWORLD_LEVELS + Globals->UNDERDEEP_LEVELS + Globals->ABYSS_LEVEL > 0) {
+		f.LinkRef("world_levels");
+		temp = "The world has more than one level. The regions described so "
+			"far are on the surface";
+		if (Globals->NEXUS_EXISTS) {
+			temp += ", and the ";
+			temp += f.Link("#world_nexus", "Atlantis Nexus") + " is a level of "
+				"its own";
+		}
+		temp += ". Below the surface lies the underworld";
+		if (Globals->UNDERDEEP_LEVELS > 0) {
+			temp += ", and deeper still the underdeep";
+		}
+		if (Globals->ABYSS_LEVEL) {
+			temp += ", and at the very bottom the abyss";
+		}
+		temp += ". The levels below the surface are smaller than the surface, "
+			"and have terrain of their own, such as caverns, underground "
+			"forests and tunnels. Regions that are not on the surface show "
+			"their level as part of their coordinates, for example "
+			"\"underforest (3,5,underworld)\". Underground, regions are not "
+			"always connected to all of their neighbors: some of the exits "
+			"between underground regions are blocked.";
+		f.Paragraph(temp);
+		temp = "The levels are connected by shafts. A shaft is a structure "
+			"that \"contains an inner location\"; it leads to a region on "
+			"another level, where there is a shaft leading back. A unit inside "
+			"a shaft can travel through it with the ";
+		temp += f.Link("#move", "MOVE") + " IN order (for example, MOVE 3 IN to "
+			"enter shaft 3 and go through it).";
+		f.Paragraph(temp);
+	}
 	f.LinkRef("world_regions");
 	f.TagText("h3", "Regions:");
 	temp = "Here is a sample region, as it might appear on your turn report:";
@@ -2075,11 +2130,21 @@ int Game::GenRules(const AString &rules, const AString &css,
 		temp += SkillDefs[last].name;
 	}
 
+	// The list above skips magic and apprentice skills, and skills that require another
+	// skill first.
+	temp += ". These are the basic skills; there are also more advanced "
+		"skills, which can only be studied once the skills they depend on "
+		"have been learned";
+	if (Globals->LEADERS_EXIST && !Globals->MAGE_NONLEADERS) {
+		temp += ", and magic skills, which only leaders can study (see ";
+	} else {
+		temp += ", and magic skills (see ";
+	}
+	temp += f.Link("#magic", "Magic") + ")";
 	temp += ". When a unit possesses a skill, he also has a skill level "
-		"to go with it.  Generally, the effectiveness of a skill is "
-		"directly proportional to the skill level involved, so a unit with "
-		"level 2 in a skill is twice as good as a unit with level 1 in the "
-		"same skill.";
+		"to go with it.  Generally, a higher level makes a unit better at "
+		"what the skill does, but not every skill improves in the same way; "
+		"the description of each skill explains what its levels do.";
 	f.Paragraph(temp);
 	f.LinkRef("skills_limitations");
 	f.TagText("h3", "Limitations:");
@@ -5449,7 +5514,7 @@ int Game::GenRules(const AString &rules, const AString &css,
 	f.WrapStr("#END");
 	f.Enclose(0, "pre");
 	temp = "For example, if your faction number (shown at the top of your "
-		"report) is 27, your password if \"foobar\", and you have two "
+		"report) is 27, your password is \"foobar\", and you have two "
 		"units numbered 5 and 17:";
 	f.Paragraph(temp);
 	f.Paragraph("");
@@ -5473,22 +5538,26 @@ int Game::GenRules(const AString &rules, const AString &css,
 	temp = "IMPORTANT: You MUST use the correct #ATLANTIS line or else your "
 		"orders will be ignored.";
 	f.Paragraph(temp);
-	temp = "If you have a password set, you must specify it on you "
+	temp = "If you have a password set, you must specify it on your "
 		"#atlantis line, or the game will reject your orders.  See the ";
 	temp += f.Link("#password", "PASSWORD") + " order for more details.";
 	f.Paragraph(temp);
 	temp = "Each type of order is designated by giving a keyword as the "
 		"first non-blank item on a line.  Parameters are given after this, "
 		"separated by spaces or tabs. Blank lines are permitted, as are "
-		"comments; anything after a semicolon is treated as a comment "
-		"(provided the semicolon is not in the middle of a word).";
+		"comments; anything after a semicolon is treated as a comment, "
+		"even if the semicolon is in the middle of a word, unless it is "
+		"inside double quotes.";
 	f.Paragraph(temp);
 	temp = "The parser is not case sensitive, so all commands may be given "
 		"in upper case, lower case or a mixture of the two.  However, when "
 		"supplying names containing spaces, the name must be surrounded "
 		"by double quotes, or else underscore characters must be used in "
-		"place of spaces in the name.  (These things apply to the #ATLANTIS "
-		"and #END lines as well as to order lines.)";
+		"place of spaces in the name.  Underscores only work for the names "
+		"of things in the game, such as items, skills and structures; text "
+		"that you make up yourself, such as the name or description of a "
+		"unit, must be put in double quotes.  (These things apply to the "
+		"#ATLANTIS and #END lines as well as to order lines.)";
 	f.Paragraph(temp);
 	temp = "You may precede orders with the at sign (@), in which case they "
 		"will appear in the Template at the bottom of your report.  This is "
@@ -5531,7 +5600,8 @@ int Game::GenRules(const AString &rules, const AString &css,
 		"[item] means an item (like wood or longbow) that a unit can have "
 		"in its possession. [flag] is an argument taken by several orders, "
 		"that sets or unsets a flag for a unit. A [flag] value must be "
-		"either 1 (set the flag) or 0 (unset the flag).  Other parameters "
+		"either 1 (set the flag) or 0 (unset the flag); TRUE and FALSE, "
+		"YES and NO, and ON and OFF can be used as well.  Other parameters "
 		"are generally numbers or names.";
 	f.Paragraph(temp);
 	temp = "IMPORTANT: Remember that names containing spaces (e.g., "
