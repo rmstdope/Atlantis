@@ -1992,9 +1992,9 @@ int Game::GenRules(const AString &rules, const AString &css,
 		// water whatever LAKESIDE_IS_COASTAL says; that flag only affects IsCoastal.
 		temp += f.Link("#sail", "SAIL") + " order is processed.  (A coastal " +
 			"region is defined as a non-ocean region with at least one "
-			"adjacent ocean region";
+			"adjacent ocean";
 		if (Globals->LAKES > 0) temp += " or lake";
-		temp += ".)";
+		temp += " region.)";
 		f.Paragraph(temp);
 		temp = AString("Note that a unit on board a fleet while it is ") +
 			"sailing may not " + f.Link("#move", "MOVE") +
@@ -2005,10 +2005,27 @@ int Game::GenRules(const AString &rules, const AString &css,
 			"fleet; they will have to reissue the ";
 		temp += f.Link("#guard", "GUARD") +  " 1 order to guard a " +
 			"region after sailing.";
+		// ARegion::CheckFleets: a fleet at sea with no living unit aboard is removed.
+		temp += " A fleet that is left at sea with no one aboard is lost.";
 		f.Paragraph(temp);
-		temp = AString("Most ships get ") + NumToWord(ItemDefs[I_LONGBOAT].speed);
-		temp += AString(" movement point") + (ItemDefs[I_LONGBOAT].speed==1?"":"s");
-		temp += " per turn.";
+		// Object::GetFleetSpeed: a fleet moves at the speed of its slowest ship (the Speed
+		// column below), plus the bonuses. Wind: every unit aboard adds GetAttribute("wind") *
+		// 12 * FLEET_WIND_BOOST, divided by the sailors the fleet needs, capped at
+		// FLEET_WIND_BOOST -- so one level of wind gives the full bonus to a fleet needing up
+		// to 12 sailors, whatever FLEET_WIND_BOOST is. (This used to quote the Longboat's
+		// speed, which NewOrigins disables.)
+		temp = "Each type of ship has a speed (see the table below), which is "
+			"the number of movement points it gets per turn; a fleet moves at "
+			"the speed of its slowest ship.";
+		if (!(SkillDefs[S_SUMMON_WIND].flags & SkillType::DISABLED) &&
+				Globals->FLEET_WIND_BOOST > 0) {
+			temp += AString(" Units aboard that can call up the wind (for example "
+				"with the Summon Wind skill) can add up to ") +
+				NumToWord(Globals->FLEET_WIND_BOOST) + " movement point" +
+				(Globals->FLEET_WIND_BOOST == 1 ? "" : "s") + ". The full bonus "
+				"needs one level of wind-calling for every 12 sailors the fleet "
+				"needs; less gives a partial bonus.";
+		}
 		if (Globals->FLEET_CREW_BOOST > 0) {
 			temp += " Ships get an extra movement point for each "
 				"time they double the number of required crew, "
@@ -2050,12 +2067,24 @@ int Game::GenRules(const AString &rules, const AString &css,
 			"ocean region, or from a coastal region to an ocean "
 			"region, or from an ocean region to a coastal region.";
 		if (Globals->PREVENT_SAIL_THROUGH) {
-			temp += " Ships may not sail through single hex land masses "
-				"and must leave via the same side they entered or a side "
-				"adjacent to that one.";
+			// Object::SailThroughCheck: prevdir is the direction back to where the fleet came
+			// from. It may go back that way, or out to water if, going round the region one
+			// way or the other from the entry side to the exit side, every neighbour passed is
+			// water. So a one-hex island can be sailed through; a strip of land separating two
+			// waters cannot be crossed. (The old text claimed the opposite.)
+			temp += " A fleet may not cross land that separates two bodies "
+				"of water. When a fleet that has sailed into a land region "
+				"sails out again in the same turn, it can always go back the "
+				"way it came; it can leave by another side only if, going "
+				"around the region in one direction or the other from the side "
+				"it entered by to the side it leaves by, every region it passes "
+				"is water. This means that a fleet can sail past a small island "
+				"by stopping in it, but cannot use a coastal region as a short "
+				"cut across a strip of land.";
 			if (Globals->ALLOW_TRIVIAL_PORTAGE) {
 				temp += " Ships ending their movement in a land hex may "
-					"sail out along any side connecting to water.";
+					"sail out along any side connecting to water on the "
+					"next turn.";
 			}
 		}
 		if (flying_ships) {
@@ -2087,12 +2116,18 @@ int Game::GenRules(const AString &rules, const AString &css,
 			"from moving).  Also, there must be enough sailors aboard "
 			"(using the ";
 		temp += f.Link("#sail", "SAIL") + " order), to sail the fleet, or ";
-		temp += "it will not go anywhere.  Note that the sailing skill "
-			"increases the usefulness of a unit proportionally; thus, a "
-			"1 man unit with level 5 sailing skill can sail a longboat "
-			"alone.  (See the section on skills for further details on "
-			"skills.)  The capacities (and costs in labor units) of the "
-			"various basic ship types are as follows:";
+		// Do1SailOrder: sum of Sailing level * men over every unit aboard with a SAIL order
+		// must be at least GetFleetSize(), the sum of each ship's sailors (weight / 50).
+		temp += "it will not go anywhere.  The number of sailors a fleet needs "
+			"is the total for all of its ships, as given in the table below. "
+			"Each unit aboard that issues the ";
+		temp += f.Link("#sail", "SAIL") + " order (including the owner) "
+			"counts as many sailors as its number of men times its level of "
+			"sailing skill; thus a 1 man unit with level 4 sailing skill can "
+			"sail a ship that needs 4 sailors alone.  (See the section on "
+			"skills for further details on skills.)  The capacities, speeds, "
+			"sailors needed and costs in labor units of the various basic "
+			"ship types are as follows:";
 		f.Paragraph(temp);
 		f.LinkRef("tableshipcapacities");
 		f.Enclose(1, "center");
@@ -2100,6 +2135,7 @@ int Game::GenRules(const AString &rules, const AString &css,
 		f.Enclose(1, "tr");
 		f.TagText("td", "Class");
 		f.TagText("th", "Capacity");
+		f.TagText("th", "Speed");
 		f.TagText("th", "Cost");
 		f.TagText("th", "Sailors");
 		f.TagText("th", "Skill");
@@ -2125,7 +2161,10 @@ int Game::GenRules(const AString &rules, const AString &css,
 			f.PutStr(ItemDefs[i].name);
 			f.Enclose(0, "td");
 			f.Enclose(1, "td align=\"center\"");
-			f.PutStr(ItemDefs[i].swim);
+			f.PutStr(ItemDefs[i].fly > 0 ? ItemDefs[i].fly : ItemDefs[i].swim);
+			f.Enclose(0, "td");
+			f.Enclose(1, "td align=\"center\"");
+			f.PutStr(ItemDefs[i].speed);
 			f.Enclose(0, "td");
 			f.Enclose(1, "td align=\"center\"");
 			f.PutStr(ItemDefs[i].pMonths);
@@ -2152,6 +2191,9 @@ int Game::GenRules(const AString &rules, const AString &css,
 			f.Enclose(0, "td");
 			f.Enclose(1, "td align=\"center\"");
 			f.PutStr(ObjectDefs[i].capacity);
+			f.Enclose(0, "td");
+			f.Enclose(1, "td align=\"center\"");
+			f.PutStr(ItemDefs[ObjectDefs[i].item].speed);
 			f.Enclose(0, "td");
 			f.Enclose(1, "td align=\"center\"");
 			f.PutStr(ObjectDefs[i].cost);
@@ -2195,12 +2237,40 @@ int Game::GenRules(const AString &rules, const AString &css,
 		"enough movement points to do so. "
 		"Note that these movement points can be carried over from "
 		"one month to another if a MOVE (or ADVANCE) command did "
-		"not complete in the month - for example, a unit on foot "
-		"trying to move into a mountain region in winter would not "
-		"have enough movement points to enter in one turn, but if "
-		"it continues the same move on the next turn, it would use "
-		"the accumulated points from the last month and manage to "
-		"enter the mountains at last.";
+		"not complete in the month";
+	// Game::RunMovementOrders saves the leftover points (savedmovement) only toward the
+	// first remaining direction; DoAMoveOrder uses them only if next month's step is in that
+	// same direction, otherwise they are lost. The example uses the most expensive terrain a
+	// walker can meet, so it stays right for every ruleset.
+	{
+		int hardest = -1;
+		for (int t : worldTerrains()) {
+			if (hardest == -1 || TerrainDefs[t].movepoints > TerrainDefs[hardest].movepoints)
+				hardest = t;
+		}
+		int walk = ItemDefs[I_MAN].speed;
+		int cost = hardest == -1 ? 1 : TerrainDefs[hardest].movepoints;
+		if (Globals->WEATHER_EXISTS) cost *= 2;
+		if (cost > walk) {
+			temp += AString(" - for example, a unit on foot trying to move into a ") +
+				TerrainDefs[hardest].name + " region";
+			if (Globals->WEATHER_EXISTS) temp += " in winter";
+			temp += " would not have enough movement points to enter in one "
+				"turn, but if it continues the same move on the next turn, it "
+				"would use the accumulated points from the last month and "
+				"manage to enter at last";
+		}
+	}
+	temp += ". The saved points can only be used if the first step of the "
+		"next month's move is in the same direction; otherwise they are "
+		"lost.";
+	f.Paragraph(temp);
+	// RunMovementOrders, per phase: DoMoveEnter for every unit, then every fleet, then
+	// every MOVE/ADVANCE unit.
+	temp = "Within each phase, any steps that enter or leave structures are "
+		"carried out first, then fleets move, and then units using ";
+	temp += f.Link("#move", "MOVE") + " or " + f.Link("#advance", "ADVANCE") +
+		" move.";
 	f.Paragraph(temp);
 	if (may_sail) {
 		temp = "Sailing is handled the same way, with one minor "
