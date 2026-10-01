@@ -80,6 +80,21 @@ static std::string joinList(const std::vector<std::string>& items, const char *l
 	return out;
 }
 
+// The terrain types a player can meet: the surface terrains flagged SHOW_RULES, lakes when
+// the ruleset makes them (LAKES), and the underground terrains every ruleset with an
+// underworld uses (each world.cpp creates caverns, underforests, tunnels and chasms).
+static std::vector<int> worldTerrains() {
+	std::vector<int> terrains;
+	for (int t = 0; t < R_NUM; t++) {
+		if (TerrainDefs[t].flags & TerrainType::SHOW_RULES) terrains.push_back(t);
+	}
+	if (Globals->LAKES > 0) terrains.push_back(R_LAKE);
+	if (Globals->UNDERWORLD_LEVELS > 0) {
+		for (int t : { R_CAVERN, R_UFOREST, R_TUNNELS, R_CHASM }) terrains.push_back(t);
+	}
+	return terrains;
+}
+
 // Point usage in FactionTypes order -- the order the turn report uses -- e.g.
 // "3 points on Martial and 2 points on Magic". (fac.type is an unordered_map, so iterating it
 // directly gave an arbitrary order.)
@@ -1144,8 +1159,11 @@ int Game::GenRules(const AString &rules, const AString &css,
 	int manidx = -1;
 	int leadidx = -1;
 
+	// Pick the sample races from ENABLED items only (the first IT_MAN used to be vikings,
+	// which NewOrigins disables) and use them consistently in the sample and the prose.
 	for (i = 0; i < NITEMS; i++) {
 		if (!(ItemDefs[i].type & IT_MAN)) continue;
+		if (ItemDefs[i].flags & ItemType::DISABLED) continue;
 		if (ItemDefs[i].type & IT_LEADER) {
 			if (leadidx == -1) leadidx = i;
 		} else {
@@ -1166,19 +1184,20 @@ int Game::GenRules(const AString &rules, const AString &css,
 	if (Globals->WEATHER_EXISTS)
 		f.WrapStr("The weather was clear last month; it will be clear next "
 				"month.");
-	temp = AString("Wages: $15 (Max: $") + (money/Globals->WORK_FRACTION) +
+	temp = AString("Wages: $15.0 (Max: $") + (money/Globals->WORK_FRACTION) +
 			").";
 	f.WrapStr(temp);
 	f.WrapStr("Wanted: none.");
-	temp = "For Sale: 50 ";
+	// Recruits on sale: Market::PostTurn sets the amount to population/25 (leaders /125) and
+	// the price to wages * 4 * baseprice / (10 * BASE_MAN_COST) -- 60 * ratio at $15 wages.
+	temp = AString("For Sale: ") + (500 / 25) + " ";
 	temp += AString(ItemDefs[manidx].names) + " [" + ItemDefs[manidx].abr + "]";
 	temp += " at $";
-	float ratio = ItemDefs[(Globals->RACES_EXIST?I_NOMAD:I_MAN)].baseprice/
-		(float)Globals->BASE_MAN_COST;
+	float ratio = ItemDefs[manidx].baseprice / (float)Globals->BASE_MAN_COST;
 	temp += (int)(60*ratio);
 	if (Globals->LEADERS_EXIST) {
 		ratio = ItemDefs[leadidx].baseprice/(float)Globals->BASE_MAN_COST;
-		temp += AString(", 10 ") + ItemDefs[leadidx].names + " [" +
+		temp += AString(", ") + (500 / 125) + " " + ItemDefs[leadidx].names + " [" +
 			ItemDefs[leadidx].abr + "] at $";
 		temp += (int)(60*ratio);
 	}
@@ -1203,13 +1222,21 @@ int Game::GenRules(const AString &rules, const AString &css,
 	f.PutNoFormat("");
 	f.DropWrapTab();
 	temp = "* Hans Shadowspawn (15), Merry Pranksters (14), ";
-	if (Globals->LEADERS_EXIST)
-		temp2 = "leader [LEAD]";
-	else if (Globals->RACES_EXIST)
-		temp2 = "nomad [NOMA]";
-	else
-		temp2 = "man [MAN]";
-	temp += temp2 + ", 500 silver [SILV]. Skills: none.";
+	int sampleman = Globals->LEADERS_EXIST ? leadidx : manidx;
+	temp2 = AString(ItemDefs[sampleman].name) + " [" + ItemDefs[sampleman].abr + "]";
+	{
+		// Unit::WriteReport shows your own units' weight and capacities
+		// (fly/ride/walk/swim). Computed from a real Unit holding the same items so the
+		// numbers match the engine. Deliberately not deleted: genrules runs once and exits,
+		// and a Unit that was never placed in the world isn't worth destructing here.
+		Unit *sample = new Unit();
+		sample->items.SetNum(sampleman, 1);
+		sample->items.SetNum(I_SILVER, 500);
+		temp += temp2 + ", 500 silver [SILV]. Weight: " + sample->items.Weight() +
+			". Capacity: " + sample->FlyingCapacity() + "/" + sample->RidingCapacity() +
+			"/" + sample->WalkingCapacity() + "/" + sample->SwimmingCapacity() +
+			". Skills: none.";
+	}
 	f.WrapStr(temp);
 	temp = AString("- Vox Populi (13), ") + temp2 + ".";
 	f.WrapStr(temp);
@@ -1219,7 +1246,7 @@ int Game::GenRules(const AString &rules, const AString &css,
 		"is Turia, and the coordinates of this region are (172,110).  The "
 		"population of this region is 500 ";
 	if (Globals->RACES_EXIST)
-		temp += "nomads";
+		temp += ItemDefs[manidx].names;
 	else
 		temp += "peasants";
 	temp += AString(", and there is $") + money + " of taxable income ";
@@ -1227,7 +1254,21 @@ int Game::GenRules(const AString &rules, const AString &css,
 		"various details about items for sale, wages, etc.  Finally, "
 		"there is a list of all visible units.  Units that belong to your "
 		"faction will be so denoted by a '*', whereas other faction's "
-		"units are preceded by a '-'.";
+		"units are preceded by a '-' (see ";
+	temp += f.Link("#reportformat", "Report Format") + " for other markers). "
+		"For your own units, the report also shows their total weight and how "
+		"much they can carry when flying, riding, walking and swimming.";
+	if (Globals->TOWNS_EXIST) {
+		// ARegion::ShortPrint adds ", contains <town> [<size>]" to the first line.
+		temp += " If the region has a settlement, the first line also gives its "
+			"name and size, for example \"plain (172,110) in Turia, contains "
+			"Tarmellion [town]\".";
+	}
+	if (Globals->GATES_EXIST) {
+		// ARegion::WriteReport shows the gate only to units with Gate Lore.
+		temp += " If you have a unit that knows Gate Lore, the report also "
+			"tells you when there is a Gate in the region.";
+	}
 	f.Paragraph(temp);
 	temp = "Since Atlantis is made up of hexagonal regions, the coordinate "
 		"system is not always exactly intuitive.  Here is the layout of "
@@ -1250,13 +1291,26 @@ int Game::GenRules(const AString &rules, const AString &css,
 	f.PutNoFormat("  \\____/      \\____/");
 	f.PutNoFormat("  /    \\      /    \\");
 	f.Enclose(0, "pre");
-	temp = "Note that the are \"holes\" in the coordinate system; there "
+	temp = "Note that there are \"holes\" in the coordinate system; there "
 		"is no region (1,2), for instance.  This is due to the hexagonal "
 		"system of regions.";
 	f.Paragraph(temp);
-	temp = "Most regions are similar to the region shown above, but the "
-		"are certain exceptions.  Oceans, not surprisingly, have no "
-		"population.";
+	// Terrains with no population: TerrainDefs[].pop == 0 after the ruleset's table changes
+	// (in NewOrigins: ocean, volcano, lake and tunnels; chasm has population there).
+	temp = "Most regions are similar to the region shown above, but there "
+		"are certain exceptions.  ";
+	{
+		std::vector<std::string> empty;
+		for (int t : worldTerrains()) {
+			if (TerrainDefs[t].pop == 0) empty.push_back(TerrainDefs[t].plural);
+		}
+		if (!empty.empty()) {
+			std::string list = joinList(empty);
+			list[0] = toupper(list[0]);
+			temp += list.c_str();
+			temp += " have no population.";
+		}
+	}
 	if (Globals->TOWNS_EXIST)
 		temp += " Some regions will contain villages, towns, and cities. "
 			"More information on these is available in the section on the "
@@ -1305,7 +1359,20 @@ int Game::GenRules(const AString &rules, const AString &css,
 
 	f.LinkRef("region_resources");
 	f.TagText("h3", "Region resources:");
-	f.Paragraph("Here is list of resources you can find in regions:");
+	// ARegion::SetupProds (economy.cpp): each listed resource is rolled once, when the world
+	// is created, with the given percentage chance (weight is always 1); disabled items are
+	// skipped. Every region with an economy also gets grain or livestock (or fish, on the
+	// coast, with COASTAL_FISH).
+	temp = "Here is a list of the resources you can find in each type of "
+		"region. The percentage is the chance that a region of that type has "
+		"the resource; this is decided when the world is created.";
+	if (Globals->FOOD_ITEMS_EXIST) {
+		temp += " In addition, every region with a population produces either "
+			"grain or livestock";
+		if (Globals->COASTAL_FISH) temp += " (or fish, if it is on the coast)";
+		temp += ".";
+	}
+	f.Paragraph(temp);
 	f.Enclose(1, "center");
 	f.Enclose(1, "table border=\"1\"");
 	f.Enclose(1, "tr");
@@ -1317,8 +1384,7 @@ int Game::GenRules(const AString &rules, const AString &css,
 	f.Enclose(0, "td");
 	f.Enclose(0, "tr");
 
-	for (int i=0; i<R_NUM; i++) {
-		if (!(TerrainDefs[i].flags & TerrainType::SHOW_RULES)) continue;
+	for (int i : worldTerrains()) {
 		int first = 1;
 		f.Enclose(1, "tr");
 		f.Enclose(1, "td colspan=\"2\"");
@@ -1330,6 +1396,8 @@ int Game::GenRules(const AString &rules, const AString &css,
 
 		for (unsigned int c = 0; c < sizeof(TerrainDefs[i].prods)/sizeof(Product); c++) {
 			if (TerrainDefs[i].prods[c].product == -1) continue;
+			if (ItemDefs[TerrainDefs[i].prods[c].product].flags & ItemType::DISABLED)
+				continue;
 
 			if (first == 0) {
 				temp = temp + AString(", ");
@@ -1366,12 +1434,7 @@ int Game::GenRules(const AString &rules, const AString &css,
 	temp += temp2 + ", sword [SWOR]";
 	f.WrapStr(temp);
 	temp = "- Rowing Doom (188), ";
-	if (Globals->RACES_EXIST)
-		temp += "10 nomads [NOMA]";
-	else if (Globals->LEADERS_EXIST)
-		temp += "10 leaders [LEAD]";
-	else
-		temp += "10 men [MAN]";
+	temp += AString("10 ") + ItemDefs[manidx].names + " [" + ItemDefs[manidx].abr + "]";
 	temp += ", 10 swords [SWOR].";
 	f.WrapStr(temp);
 	f.Enclose(0, "pre");
@@ -1383,16 +1446,48 @@ int Game::GenRules(const AString &rules, const AString &css,
 		temp += " Units within a structure are always visible, even if "
 			"they would otherwise not be seen.";
 	f.Paragraph(temp);
+	// Object::GetOwner is simply the first unit in the object's list (entering appends);
+	// Object::ForbiddenBy refuses entry when the owner's faction is less than Friendly to the
+	// unit (never for Gateways); naming, describing, PROMOTE, EVICT and DESTROY check the
+	// owner. RunEnterOrders(1) runs new units' ENTER after GIVE.
 	temp = "Units inside structures are still considered to be in the "
 		"region, and other units can interact with them; however, they "
 		"may gain benefits, such as defensive bonuses in combat from being "
-		"inside a building.  The first unit to enter an object is "
-		"considered to be the owner; only this unit can do things such as "
-		"renaming the object, or permitting other units to enter. The owner "
-		"of an object can be identified on the turn report, as it is the "
-		"first unit listed under the object.  Only units with men in them "
-		"can be structure owners, so newly created units cannot own a "
-		"structure until they contain men.";
+		"inside a building.  The owner of a structure is the first unit "
+		"listed under it on the turn report; normally this is the unit that "
+		"has been inside it the longest, and if the owner leaves, the next "
+		"unit in the list becomes the owner.  Only the owner can rename or ";
+	temp += f.Link("#destroy", "DESTROY") + " the structure, hand over "
+		"ownership with ";
+	temp += f.Link("#promote", "PROMOTE") + ", or throw other units out with ";
+	temp += f.Link("#evict", "EVICT") + ".  A unit may enter a structure if it "
+		"is empty, if it is owned by a unit of its own faction, or if the "
+		"owner's faction has declared the unit's faction Friendly or Ally.";
+	f.Paragraph(temp);
+	temp = "Newly formed units carry out their ";
+	temp += f.Link("#enter", "ENTER") + " orders after ";
+	temp += f.Link("#give", "GIVE") + " orders have been processed, so they can "
+		"be given men and goods before they enter a structure.";
+	f.Paragraph(temp);
+	// Object::Report suffixes: ", needs N" (unfinished), ", contains an inner location"
+	// (shafts, Gateways), ", closed to player units" (no CANENTER: lairs and the like).
+	temp = "Besides buildings";
+	if (may_sail) temp += " and fleets";
+	temp += ", a region can contain other kinds of structure. The report adds "
+		"a note after a structure's type when something about it is special: "
+		"\"needs N\" means the structure is not finished yet, and needs N "
+		"more units of work; \"contains an inner location\" means that it "
+		"leads somewhere else, and can be travelled through with ";
+	temp += f.Link("#move", "MOVE") + " IN; and \"closed to player units\" "
+		"means that your units cannot enter it.";
+	if (Globals->LAIR_MONSTERS_EXIST) {
+		temp += " Monster lairs are structures of this last kind (see ";
+		temp += f.Link("#nonplayers_monsters", "Wandering Monsters") + ").";
+	}
+	if (!(ObjectDefs[O_ROADN].flags & ObjectType::DISABLED)) {
+		temp += " Roads are structures too (see ";
+		temp += f.Link("#economy_roads", "Roads") + ").";
+	}
 	f.Paragraph(temp);
 	if (Globals->NEXUS_EXISTS) {
 		f.LinkRef("world_nexus");
@@ -1440,6 +1535,18 @@ int Game::GenRules(const AString &rules, const AString &css,
 			temp += Globals->WORLD_NAME;
 			temp += ".";
 		}
+		f.Paragraph(temp);
+		// ARegion::IsSafeRegion is true for the Nexus in every ruleset (battles refused in
+		// Game::RunBattle); summoning spells, EVICT and WITHDRAW each refuse the Nexus too.
+		temp = "The Nexus is a safe place: no battles can take place there, "
+			"creatures cannot be summoned there, and the ";
+		temp += f.Link("#evict", "EVICT");
+		if (Globals->ALLOW_WITHDRAW) {
+			temp += AString(" and ") + f.Link("#withdraw", "WITHDRAW") + " orders do";
+		} else {
+			temp += " order does";
+		}
+		temp += " not work there.";
 		f.Paragraph(temp);
 		if (!Globals->START_CITIES_EXIST) {
 			// These are O_GATEWAY objects ("Gateway to <terrain> [n]" in the report), created
