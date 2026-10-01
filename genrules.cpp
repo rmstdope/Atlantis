@@ -5644,6 +5644,14 @@ int Game::GenRules(const AString &rules, const AString &css,
 		"mage (by studying one of the Foundations), the unit number is "
 		"fixed. (The mage may be given to another faction using the ";
 	temp += f.Link("#give", "GIVE") + " UNIT order.)";
+	// GIVE refuses men to/from mages and apprentices; GetBuyAmount refuses their BUY of men;
+	// DoStudyOrder refuses turning an apprentice into a mage and vice versa.
+	temp += " Mages may not receive men or recruit them either.";
+	if (app_exist) {
+		temp += AString(" The same applies to ") + Globals->APPRENTICE_NAME +
+			"s. An " + Globals->APPRENTICE_NAME + " can never become a mage, "
+			"and a mage can never become an " + Globals->APPRENTICE_NAME + ".";
+	}
 	f.Paragraph(temp);
 	f.LinkRef("magic_skills");
 	f.TagText("h3", "Magic Skills:");
@@ -5697,6 +5705,17 @@ int Game::GenRules(const AString &rules, const AString &css,
 	temp += "If the mage is not in such a structure, his study rate is cut "
 			"in half, as he does not have the proper environment and "
 			"equipment for research.";
+	// Game::DoStudyOrder: halved outside a building, in an unfinished one, or when the
+	// object's mage slots for the month are used up; slots go to mages in the order they are
+	// processed (report order), and only mages studying magic at level 2+ use one.
+	temp += " The building must be finished.";
+	if (Globals->LIMITED_MAGES_PER_BUILDING) {
+		temp += " Each building can only support a limited number of mages "
+			"each month (see the table below); the mages listed first in the "
+			"building get the places, and only mages studying a magic skill "
+			"they already know at level 2 or more use one. A mage who does not "
+			"get a place studies at half rate.";
+	}
 	f.Paragraph(temp);
 
 	if (Globals->LIMITED_MAGES_PER_BUILDING) {
@@ -5731,9 +5750,30 @@ int Game::GenRules(const AString &rules, const AString &css,
 			f.Enclose(1, "td align=\"left\" nowrap");
 			f.PutStr(ObjectDefs[i].maxMages);
 			f.Enclose(0, "td");
+			f.Enclose(0, "tr");    // was missing, leaving every row unclosed
 		}
 		f.Enclose(0, "table");
 		f.Enclose(0, "center");
+		// Object::FleetCapacity: a fleet supports the sum of maxMages of the ObjectDefs entry
+		// named like each ship it holds.
+		std::vector<std::string> ships;
+		for (i = 0; i < NITEMS; i++) {
+			if (ItemDefs[i].flags & ItemType::DISABLED) continue;
+			if (!(ItemDefs[i].type & IT_SHIP)) continue;
+			AString sname = ItemDefs[i].name;
+			int ot = LookupObject(&sname);
+			if (ot > 0 && ObjectDefs[ot].maxMages > 0) {
+				ships.push_back(std::string(ItemDefs[i].name) + " " +
+					std::to_string(ObjectDefs[ot].maxMages));
+			}
+		}
+		if (!ships.empty()) {
+			temp = "Fleets can also support mages: each ship adds its own "
+				"places (";
+			temp += joinList(ships).c_str();
+			temp += ").";
+			f.Paragraph(temp);
+		}
 	}
 
 	f.LinkRef("magic_foundations");
@@ -5798,9 +5838,17 @@ int Game::GenRules(const AString &rules, const AString &css,
 	f.Paragraph(temp);
 	temp = "Secondly, some spells are for use in combat. A mage may specify "
 		"that he wishes to use a spell in combat by issuing the ";
+	// Soldier::SetupSpell: only unit->combat is used; it persists between turns. COMBAT with
+	// no spell clears it. With a combat spell set, special-attack battle items are not used
+	// (SetupCombatItems). Only mages (not apprentices) can set one.
 	temp += f.Link("#combat", "COMBAT") + " order.  A combat spell "
 		"specified in this way will only be used if the mage finds "
-		"himself taking part in a battle.";
+		"himself taking part in a battle. A mage can only use one combat "
+		"spell (this includes shields), and the setting stays until it is "
+		"changed; ";
+	temp += f.Link("#combat", "COMBAT") + " with no spell clears it. A mage "
+		"with a combat spell set does not use battle items that give a "
+		"special attack.";
 	f.Paragraph(temp);
 	temp = "The third type of spell use is for spells that take an entire "
 		"month to cast.  These spells are cast by the mage issuing the ";
@@ -5814,6 +5862,11 @@ int Game::GenRules(const AString &rules, const AString &css,
 	temp += "The justification for this (as well as being for game balance) "
 		"is that a spell drains a mage of his magic power for the month, "
 		"but does not actually take the entire month to cast.";
+	// Game::RunACastOrder practises the spell; ARegion::NotifySpell tells other factions'
+	// mages in the region who know the related lore.
+	temp += " Casting a spell gives the mage practice in it. Other factions' "
+		"mages in the region who know the related lore may notice that a "
+		"spell has been cast.";
 	f.Paragraph(temp);
 	temp = "The description that a mage receives when he first learns a "
 		"spell specifies the manner in which the spell is used (automatic, "
@@ -5828,14 +5881,19 @@ int Game::GenRules(const AString &rules, const AString &css,
 	f.Paragraph(temp);
 	temp = "Although the magic skills and spells are unspecified in these "
 		"rules, left for the players to discover, the rules for combat "
-		"spells' interaction are spelled out here.  There are five major "
-		"types of attacks, and defenses: Combat, Ranged, Energy, Weather, "
+		"spells' interaction are spelled out here.  There are six types "
+		"of attacks, and defenses: Combat, Riding, Ranged, Energy, Weather, "
 		"and Spirit.  Every attack and defense has a type, and only the "
-		"appropriate defense is effective against an attack.";
+		"appropriate defense is effective against an attack.  Shields (see "
+		"below) only exist against Ranged, Energy, Weather and Spirit "
+		"attacks; melee (Combat and Riding) attacks never meet a shield.";
 	f.Paragraph(temp);
+	// Battle::NormalRound: every shield caster adds a new shield at the start of every round,
+	// so a removed shield is effectively recast the next round.
 	temp = "Defensive spells are cast at the beginning of each round of "
 		"combat, and will have a type of attack they deflect, and skill "
-		"level (Defensive spells are generally called Shields).  Every "
+		"level (Defensive spells are generally called Shields).  Each mage "
+		"with a shield spell casts it again every round.  Every "
 		"time an attack is launched against an army, it must first attack "
 		"the highest level Shield of the same type as the attack, before "
 		"it may attack a soldier directly. Note that an attack only has "
@@ -5849,9 +5907,9 @@ int Game::GenRules(const AString &rules, const AString &css,
 		"army has cast.  If the other army has not cast any applicable "
 		"defensive spells, the attack goes through unmolested.  Unlike "
 		"normal combat however, men are at a disadvantage to defending "
-		"against spells.   Men which are in the open (not protected by "
-		"a building) have an effective skill of -2 unless they have a "
-		"shield or some other defensive magic.  Some monsters "
+		"against spells: everyone starts with an effective defense of -2 "
+		"against magic. Being inside a building adds that building's "
+		"bonus, and some items give protection too.  Some monsters "
 		"have bonuses to resisting some attacks but are more susceptible "
 		"to others. The skill level of the attack spell and the effective "
 		"skill for defense are matched against each other.  The formula "
@@ -5859,17 +5917,18 @@ int Game::GenRules(const AString &rules, const AString &css,
 		"spell is the same as for a contest of soldiers; if the levels "
 		"are equal, there is a 1:1 chance of success, and so on.  If the "
 		"offensive spell is victorious, the offensive spell deals its blows "
-		"to the defending army, and the Shield in question is destroyed "
-		"(thus, it can be useful to have more than one of the same type "
-		"of Shield in effect, as the other Shield will take the place of "
-		"the destroyed one).  Otherwise, the attack spell disperses, and "
-		"the defending spell remains in place.";
+		"to the defending army.  Otherwise, the attack spell disperses, and "
+		"the defending spell remains in place.  Spells that kill do not "
+		"destroy the Shield they get through.";
 	f.Paragraph(temp);
 	temp = "Some spells do not actually kill enemies, but rather have some "
 		"negative effect on them. These spells are treated the same as "
 		"normal spells; if there is a Shield of the same type as them, "
-		"they must attack the Shield before attacking the army. "
-		"Physical attacks that go through a defensive spell also must "
+		"they must attack the Shield before attacking the army, and if "
+		"they get through, that Shield is destroyed (thus, it can be useful "
+		"to have more than one Shield of the same type, as the next one "
+		"takes its place). "
+		"Ranged attacks that go through a defensive spell also must "
 		"match their skill level against that of the defensive spell in "
 		"question.  However, they do not destroy the defensive spell when "
 		"they are successful.";
@@ -5907,8 +5966,11 @@ int Game::GenRules(const AString &rules, const AString &css,
 		temp += "s. ";
 		temp += (char) toupper(Globals->APPRENTICE_NAME[0]);
 		temp += Globals->APPRENTICE_NAME + 1;
-		temp += "s may not cast spells, but may use items "
-			"which otherwise only mages can use.";
+		// Apprentices can't study spells or set COMBAT, but Game::RunACastOrder lets them cast
+		// a spell granted by an item they hold.
+		temp += "s cannot study spells or use combat spells, but they may use "
+			"items which otherwise only mages can use, including casting a "
+			"spell that an item gives them.";
 		f.Paragraph(temp);
 	}
 
