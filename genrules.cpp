@@ -5472,6 +5472,23 @@ int Game::GenRules(const AString &rules, const AString &css,
 				"that owns any unit in the same region.";
 		}
 		f.Paragraph(temp);
+		if (has_stea && has_obse) {
+			// Unit::GetAttribute("stealth"/"observation"): skill plus the best single bonus
+			// from items or spells (bonuses do not stack); stealth uses the worst value in the
+			// unit; being on guard forces stealth to 0. Faction::CanSee: Mind Reading 2+ shows
+			// the faction of any unit it can see.
+			temp = "These checks use a unit's effective Stealth and "
+				"Observation: its skill level plus the bonus from the best "
+				"single item or spell that helps it (bonuses from several "
+				"items or spells do not add up). The descriptions of those "
+				"items and spells give their bonuses.";
+			if (!(SkillDefs[S_MIND_READING].flags & SkillType::DISABLED)) {
+				temp += " A faction with a unit that knows Mind Reading at "
+					"level 2 or higher sees the faction of every unit it can "
+					"see.";
+			}
+			f.Paragraph(temp);
+		}
 		if (has_stea) {
 			temp = "Regardless of Stealth skill, units are always visible "
 				"when participating in combat; when guarding a region with "
@@ -5480,7 +5497,11 @@ int Game::GenRules(const AString &rules, const AString &css,
 				temp += " However, in order to see the faction that owns "
 					"the unit, you will still need a higher Observation "
 					"skill than the unit's Stealth skill.";
+				temp += " A unit on guard counts as having a Stealth of 0, so "
+					"any Observation reveals its faction.";
 			}
+			temp += " A unit that has used ";
+			temp += f.Link("#reveal", "REVEAL") + " is always visible.";
 			f.Paragraph(temp);
 			f.LinkRef("stealthobs_stealing");
 			f.TagText("h3", "Stealing:");
@@ -5502,6 +5523,14 @@ int Game::GenRules(const AString &rules, const AString &css,
 			} else {
 				temp = "The thief must know Stealth to attempt theft.";
 			}
+			// Do1Steal: the thief must see the target; a thief inside a building or fleet is
+			// visible to everyone (Faction::CanSee) and so always caught; the guardsmen's
+			// faction counts as a watcher too.
+			temp += " The thief must be able to see the target unit. A thief "
+				"inside a building or aboard a fleet is visible to everyone, so "
+				"he will always be caught.";
+			if (Globals->CITY_MONSTERS_EXIST)
+				temp += " City guardsmen who can see the thief also stop the theft.";
 			temp += " The target faction will be told what was stolen, but "
 				"not by whom.  If the specified item is silver, then $200 "
 				"or half the total available, whichever is less, will be "
@@ -5608,7 +5637,25 @@ int Game::GenRules(const AString &rules, const AString &css,
 				"victim wins, then the target faction learns which unit "
 				"made the attempt.  (Of course, this does not necessarily "
 				"mean that the assassin's faction is known.)  The winner of "
-				"the fight gets 50% of the loser's property as usual.";
+				"the fight takes spoils as usual: since only one man dies, "
+				"only his share of the unit's items can be lost, and about "
+				"half of that is recovered (see ";
+			temp += f.Link("#com_victory", "Victory!") + ").";
+			// Battle::GetSpoils skips Amulets of True Seeing for an assassin with a Ring
+			// (ass == 2), so a Ring-wearing assassin cannot pick one up.
+			if (!(ItemDefs[I_AMULETOFTS].flags & ItemType::DISABLED) &&
+					!(ItemDefs[I_RINGOFI].flags & ItemType::DISABLED)) {
+				temp += AString(" An assassin wearing a ") + ItemDefs[I_RINGOFI].name +
+					" cannot take an " + ItemDefs[I_AMULETOFTS].name + ".";
+			}
+			// Assassination battles: both sides are put outside any structure, no tactics, no
+			// helpers; the assassin must see the target; Game::RunBattle refuses a target whose
+			// faction the assassin has declared Ally.
+			temp += " In an assassination, neither side gets protection from "
+				"buildings or ships, Tactics plays no part, and no other units "
+				"join the fight. The assassin must be able to see the target, "
+				"and you cannot assassinate a unit of a faction you have "
+				"declared Ally.";
 			f.Paragraph(temp);
 			temp = f.Link("#steal", "STEAL") + " and " +
 				f.Link("#assassinate", "ASSASSINATE") +
