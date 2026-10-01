@@ -29,6 +29,7 @@
 #include "gamedata.h"
 #include "fileio.h"
 
+#include <map>
 #include <sstream>
 
 AString NumToWord(int n)
@@ -1713,13 +1714,26 @@ int Game::GenRules(const AString &rules, const AString &css,
 	f.LinkRef("movement_normal");
 	f.TagText("h3", "Normal Movement:");
 	temp = "In one month, a unit can issue a single ";
+	// Unit::MoveType / CalcMovePoints: walk, ride or fly on land; in water (similar type
+	// ocean) a unit whose swimming capacity covers its weight swims, at the speed of the
+	// items that let it swim. A flying unit with the "wind" attribute (Summon Wind) gets
+	// FLEET_WIND_BOOST extra points, capped at MAX_SPEED.
+	std::string water_regions = Globals->LAKES > 0 ? "ocean or lake regions" : "ocean regions";
 	temp += f.Link("#move", "MOVE") + " order, using one or more of its "
-		"movement points. There are three modes of travel: walking, riding "
-		"and flying. Walking units have ";
+		"movement points. There are four modes of travel: walking, riding, "
+		"flying and swimming. Walking units have ";
 	temp += NumToWord(ItemDefs[I_LEADERS].speed) + " movement point" +
 		(ItemDefs[I_LEADERS].speed==1?"":"s") + ", riding units have ";
 	temp += NumToWord(ItemDefs[I_HORSE].speed) + ", and flying units have ";
-	temp += NumToWord(ItemDefs[I_WHORSE].speed) + ". ";
+	temp += NumToWord(ItemDefs[I_WHORSE].speed) + "; swimming units move at the "
+		"speed of whatever lets them swim. ";
+	if (!(SkillDefs[S_SUMMON_WIND].flags & SkillType::DISABLED) &&
+			Globals->FLEET_WIND_BOOST > 0) {
+		temp += AString("A flying unit that can call up the wind (for example with "
+			"the Summon Wind skill) gets ") + NumToWord(Globals->FLEET_WIND_BOOST) +
+			" extra movement points, up to a maximum of " +
+			NumToWord(Globals->MAX_SPEED) + ". ";
+	}
 	temp += "A unit will automatically use the fastest mode of travel "
 		"it has available. The ";
 	temp += f.Link("#advance", "ADVANCE") + " order is the same as " +
@@ -1728,15 +1742,22 @@ int Game::GenRules(const AString &rules, const AString &css,
 		"details.";
 	f.Paragraph(temp);
 
-	temp = "Note that depending on game settings certain races might "
-		"be able to swim or fly and there are items that can enable "
-		"your units to fly or walk on water.";
+	temp = "Some races can swim, and there are creatures and items that let "
+		"units fly or swim; their descriptions say so. A unit can swim if the "
+		"swimming capacity of its people, creatures and items is at least as "
+		"great as the weight of the unit and everything it carries. Swimming "
+		"units can move into and through ";
+	temp += water_regions.c_str();
+	temp += ", where each region costs its normal movement points (roads do not "
+		"help them). To climb out of the water onto land, a swimming unit "
+		"must also be able to walk, ride or fly. Swimming units do not drown, "
+		"and can leave a fleet at sea.";
 	f.Paragraph(temp);
 
 	temp = "Flying units are not initially available to starting players. "
-		"A unit can ride provided that the carrying capacity of its "
-		"horses is at least as great as the weight of its people and "
-		"all other items. A unit can walk provided that the carrying "
+		"A unit can ride provided that the riding capacity of its "
+		"mounts (such as horses) is at least as great as the weight of its "
+		"people and all other items. A unit can walk provided that the carrying "
 		"capacity of its people";
 	if (!(ItemDefs[I_HORSE].flags & ItemType::DISABLED)) {
 		if (!(ItemDefs[I_WAGON].flags & ItemType::DISABLED)) temp += ", ";
@@ -1756,7 +1777,9 @@ int Game::GenRules(const AString &rules, const AString &css,
 	}
 	temp += ". Otherwise the unit cannot issue a ";
 	temp += f.Link("#move", "MOVE") + " order.";
-	temp += " Most people weigh 10 units and have a capacity of 5 units; "
+	temp += AString(" Most people weigh ") + ItemDefs[manidx].weight +
+		" units and can carry " + (ItemDefs[manidx].walk - ItemDefs[manidx].weight) +
+		" units (some races are lighter or stronger; see their descriptions); "
 		"data for items is as follows:";
 	f.Paragraph(temp);
 	f.LinkRef("tableitemweights");
@@ -1810,19 +1833,50 @@ int Game::GenRules(const AString &rules, const AString &css,
 	f.Enclose(0, "center");
 	if (Globals->FLIGHT_OVER_WATER != GameDefs::WFLIGHT_NONE) {
 		temp = "A unit which can fly is capable of travelling over water";
-		if (Globals->FLIGHT_OVER_WATER == GameDefs::WFLIGHT_MUST_LAND)
-			temp += ", but if the unit ends its turn over a water "
-				"hex then it will drown.";
+		if (Globals->FLIGHT_OVER_WATER == GameDefs::WFLIGHT_MUST_LAND) {
+			// Game::DrownUnits runs once, after all movement, and only looks at units that
+			// are not inside a fleet.
+			temp += ", but if the unit ends its turn over a water hex (and is "
+				"not aboard a fleet), then it will drown. Drowning is only "
+				"checked after all movement for the month is done";
+		}
 		temp += ".";
 		f.Paragraph(temp);
 	}
 
+	// ARegion::MoveCost: walking, riding and swimming units pay TerrainDefs[].movepoints;
+	// flying always costs 1; connected roads give walkers and riders cost - cost/2 (i.e.
+	// halved, rounded up, minimum 1). The list is built from the terrain table so it can't go
+	// stale (it used to be a fixed list missing volcanoes and the underground terrains).
 	temp = "Since regions are hexagonal, each region has six neighbouring "
 		"regions to the north, northeast, southeast, south, southwest and "
 		"northwest.  Moving from one region to another normally takes one "
-		"movement point, except that the following terrain types take two "
-		"movement points for riding or walking units to enter:";
-	temp += " Forest, Mountain, Swamp, Jungle, and Tundra.";
+		"movement point, except that the following terrain types take more "
+		"movement points for walking, riding or swimming units to enter:";
+	{
+		std::map<int, std::vector<std::string>> byCost;
+		for (int t : worldTerrains()) {
+			if (TerrainDefs[t].movepoints > 1) {
+				std::string name = TerrainDefs[t].name;
+				name[0] = toupper(name[0]);
+				byCost[TerrainDefs[t].movepoints].push_back(name);
+			}
+		}
+		std::vector<std::string> groups;
+		for (auto &kv : byCost) {
+			groups.push_back(joinList(kv.second) + " (" + std::to_string(kv.first) +
+				" movement points)");
+		}
+		temp += " ";
+		temp += joinList(groups, "and").c_str();
+		temp += ". Flying units always need only one movement point to enter a "
+			"region.";
+	}
+	if (!(ObjectDefs[O_ROADN].flags & ObjectType::DISABLED)) {
+		temp += " Connected roads halve the cost for walking and riding units, "
+			"rounding up (see ";
+		temp += f.Link("#economy_roads", "Roads") + ").";
+	}
 	if (Globals->WEATHER_EXISTS) {
 		temp += " Also, during certain seasons (depending on the latitude "
 			"of the region), all units (including flying ones) have a "
@@ -1831,13 +1885,13 @@ int Game::GenRules(const AString &rules, const AString &css,
 			"in the tropics, seasonal hurricane winds and torrential "
 			"rains have a similar effect.";
 	}
-	temp += " Units may not move through ocean regions ";
+	temp += AString(" Units may not move through ") + water_regions.c_str() + " ";
 	if (may_sail) {
 		temp += "without using the ";
 		temp += f.Link("#sail", "SAIL") + " order";
 	}
 	if (Globals->FLIGHT_OVER_WATER != GameDefs::WFLIGHT_NONE) {
-		temp += " unless they are capable of flight";
+		temp += " unless they can swim or fly";
 		if (Globals->FLIGHT_OVER_WATER==GameDefs::WFLIGHT_MUST_LAND) {
 			temp += ", and even then, flying units must end their "
 				"movement on land or else drown";
@@ -1861,15 +1915,17 @@ int Game::GenRules(const AString &rules, const AString &css,
 	temp += f.Link("#enter", "ENTER") + " and " + f.Link("#leave", "LEAVE");
 	temp += " orders to move in and out of structures, without issuing a ";
 	temp += f.Link("#move", "MOVE") + " order.";
-	temp += " The unit can also use the ";
-	temp += f.Link("#move", "MOVE") + " order to enter or leave a structure.";
 	f.Paragraph(temp);
 	if (Globals->UNDERWORLD_LEVELS || Globals->UNDERDEEP_LEVELS) {
+		// Game::DoAMoveOrder: MOVE IN uses the unit's current object's inner location, so the
+		// unit must be inside it (a structure number before IN enters it first).
 		temp = "Finally, certain structures contain interior passages to "
-			"other regions.  The ";
-		temp += f.Link("#move", "MOVE") + " IN order can be used to go ";
-		temp += "through these passages; the movement point cost is equal "
-			"to the normal cost to enter the destination region.";
+			"other regions.  A unit inside such a structure can go through "
+			"the passage with the ";
+		temp += f.Link("#move", "MOVE") + " IN order, or enter the structure and "
+			"go through it in one order, for example MOVE 3 IN; the movement "
+			"point cost is equal to the normal cost to enter the destination "
+			"region.";
 		f.Paragraph(temp);
 	}
 	temp = "Example: One man with a horse, sword, and chain mail wants to "
@@ -1932,9 +1988,13 @@ int Game::GenRules(const AString &rules, const AString &css,
 			"may execute other orders while the fleet is sailing.  A unit "
 			"which does not wish to travel with the fleet should leave the "
 			"fleet in a coastal region, before the ";
+		// ARegion::IsCoastalOrLakeside (used by SAIL and by ship building) counts lakes as
+		// water whatever LAKESIDE_IS_COASTAL says; that flag only affects IsCoastal.
 		temp += f.Link("#sail", "SAIL") + " order is processed.  (A coastal " +
 			"region is defined as a non-ocean region with at least one "
-			"adjacent ocean region.)";
+			"adjacent ocean region";
+		if (Globals->LAKES > 0) temp += " or lake";
+		temp += ".)";
 		f.Paragraph(temp);
 		temp = AString("Note that a unit on board a fleet while it is ") +
 			"sailing may not " + f.Link("#move", "MOVE") +
